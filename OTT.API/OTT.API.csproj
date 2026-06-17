@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>OTT.API</RootNamespace>
+    <AssemblyName>OTT.API</AssemblyName>
+    <UserSecretsId>ott-api-secrets</UserSecretsId>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ASP.NET Core -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
+
+    <!-- Swagger / OpenAPI -->
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0" />
+
+    <!-- Entity Framework Core -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+
+    <!-- Hangfire -->
+    <PackageReference Include="Hangfire.AspNetCore" Version="1.8.9" />
+    <PackageReference Include="Hangfire.MySqlStorage" Version="2.0.3" />
+
+    <!-- Health Checks -->
+    <PackageReference Include="AspNetCore.HealthChecks.MySql" Version="8.0.0" />
+    <PackageReference Include="AspNetCore.HealthChecks.Redis" Version="8.0.0" />
+
+    <!-- Rate Limiting -->
+
+    <!-- Serilog -->
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
+    <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+  </ItemGroup>
+
+  <!--
+    TEMPORARY: these controllers were written against a different (non-existent) service
+    architecture (int IDs, result objects, IPaymentService/IAdminService/etc. that don't exist).
+    Excluded from the build until they are migrated to the canonical design, the way
+    AuthController and AdditionalControllers already are. Remove entries here as each is migrated.
+  -->
+  <ItemGroup>
+    <Compile Remove="Controllers\AdminController.cs" />
+    <Compile Remove="Controllers\SubscriptionController.cs" />
+    <Compile Remove="Controllers\ContentsController.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OTT.Application\OTT.Application.csproj" />
+    <ProjectReference Include="..\OTT.Infrastructure\OTT.Infrastructure.csproj" />
+    <ProjectReference Include="..\OTT.Domain\OTT.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>OTT.Application</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Razorpay -->
+    <PackageReference Include="Razorpay" Version="3.3.2" />
+
+    <!-- BCrypt for password hashing -->
+    <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+
+    <!-- JSON -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+
+    <!-- Entity Framework (for service layer queries) -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OTT.Domain\OTT.Domain.csproj" />
+    <ProjectReference Include="..\OTT.Infrastructure\OTT.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
