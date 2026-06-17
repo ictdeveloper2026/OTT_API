@@ -13,7 +13,7 @@ public class OttDbContextFactory : IDesignTimeDbContextFactory<OttDbContext>
     public OttDbContext CreateDbContext(string[] args)
     {
         var connStr = Environment.GetEnvironmentVariable("OTT_DESIGN_CONNECTION")
-            ?? "Server=localhost,1433;Database=ott_platform;User Id=sa;Password=Strong!Passw0rd;TrustServerCertificate=True;";
+            ?? "Server=localhost;Database=ott_platform;Trusted_Connection=True;TrustServerCertificate=True;";
 
         var options = new DbContextOptionsBuilder<OttDbContext>()
             .UseSqlServer(connStr)
