@@ -204,4 +204,20 @@ public static class HttpContextExtensions
             throw new UnauthorizedAccessException("Authentication required");
         return id.Value;
     }
+
+    public static Guid? GetProfileId(this HttpContext context)
+    {
+        var claim = context.User.FindFirst("profile_id");
+        if (claim != null && Guid.TryParse(claim.Value, out var profileId))
+            return profileId;
+        return null;
+    }
+
+    public static Guid RequireProfileId(this HttpContext context)
+    {
+        var id = context.GetProfileId();
+        if (!id.HasValue)
+            throw new UnauthorizedAccessException("No active profile selected");
+        return id.Value;
+    }
 }

@@ -1,138 +1,108 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.OutputCaching;
-using OTT.Application.DTOs.Content;
-using OTT.Application.Interfaces;
+using OTT.API.Middleware;
+using OTT.Application.DTOs;
+using OTT.Application.Services;
 
 namespace OTT.API.Controllers;
+
+// Request bodies
+public record RateRequestDto(decimal Rating);
+public record ProgressRequestDto(int WatchedSeconds, int TotalSeconds, Guid? EpisodeId);
+public record WatchlistRequestDto(Guid ContentId);
 
 [ApiController]
 [Route("api/contents")]
 public class ContentsController : ControllerBase
 {
     private readonly IContentService _content;
-    private readonly IVideoService _video;
-    private readonly IWatchHistoryService _history;
-    private readonly IAnalyticsService _analytics;
-    private readonly ICacheService _cache;
 
-    public ContentsController(IContentService content, IVideoService video,
-        IWatchHistoryService history, IAnalyticsService analytics, ICacheService cache)
-    {
-        _content = content; _video = video; _history = history;
-        _analytics = analytics; _cache = cache;
-    }
+    public ContentsController(IContentService content) => _content = content;
 
     [HttpGet("home")]
-    [OutputCache(Duration = 120)]
     public async Task<IActionResult> GetHome()
     {
-        var profileId = GetProfileId();
-        var rows = await _content.GetHomeRowsAsync(profileId);
-        return Ok(rows);
+        var result = await _content.GetHomePageAsync(HttpContext.GetTenantId(), HttpContext.GetProfileId());
+        return Ok(ApiResponse<object>.Ok(result));
     }
 
     [HttpGet("featured")]
-    [OutputCache(Duration = 300)]
     public async Task<IActionResult> GetFeatured()
     {
-        var items = await _content.GetFeaturedAsync();
-        return Ok(items);
+        var items = await _content.GetFeaturedAsync(HttpContext.GetTenantId());
+        return Ok(ApiResponse<object>.Ok(items));
     }
 
     [HttpGet("trending")]
-    [OutputCache(Duration = 600)]
     public async Task<IActionResult> GetTrending([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
-        var result = await _content.GetTrendingAsync(page, pageSize);
-        return Ok(result);
+        var result = await _content.GetTrendingAsync(HttpContext.GetTenantId(), page, pageSize);
+        return Ok(ApiResponse<object>.Ok(result));
     }
 
     [HttpGet("new-releases")]
-    [OutputCache(Duration = 600)]
     public async Task<IActionResult> GetNewReleases([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
-        var result = await _content.GetNewReleasesAsync(page, pageSize);
-        return Ok(result);
+        var result = await _content.GetNewReleasesAsync(HttpContext.GetTenantId(), page, pageSize);
+        return Ok(ApiResponse<object>.Ok(result));
     }
 
     [HttpGet("search")]
     public async Task<IActionResult> Search(
         [FromQuery] string q,
-        [FromQuery] string? genre,
+        [FromQuery] string? type,
         [FromQuery] string? language,
         [FromQuery] int? year,
-        [FromQuery] string? type,
         [FromQuery] string? sortBy,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20)
     {
-        var result = await _content.SearchAsync(q, new SearchFilters {
-            Genre = genre, Language = language, Year = year, Type = type, SortBy = sortBy
-        }, page, pageSize);
-        return Ok(result);
+        var request = new SearchRequestDto
+        {
+            Query = q ?? "",
+            Type = type,
+            Language = language,
+            ReleaseYear = year,
+            SortBy = sortBy ?? "relevance",
+            Page = page,
+            PageSize = pageSize
+        };
+        var result = await _content.SearchAsync(request, HttpContext.GetTenantId());
+        return Ok(ApiResponse<object>.Ok(result));
     }
 
-    [HttpGet("{id}")]
-    public async Task<IActionResult> GetContent(int id)
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> GetContent(Guid id)
     {
-        var profileId = GetProfileId();
-        var content = await _content.GetByIdAsync(id, profileId);
-        if (content == null) return NotFound();
-        return Ok(content);
+        var content = await _content.GetContentDetailAsync(id, HttpContext.GetTenantId(), HttpContext.GetProfileId());
+        return Ok(ApiResponse<object>.Ok(content));
     }
 
-    [HttpGet("{id}/stream")]
+    [HttpGet("{id:guid}/stream")]
     [Authorize]
-    public async Task<IActionResult> GetStreamUrl(int id, [FromQuery] string quality = "auto")
+    public async Task<IActionResult> GetStreamUrl(Guid id, [FromQuery] Guid? episodeId = null)
     {
-        var userId = GetUserId();
-        var profileId = GetProfileId();
-        // Check access (subscription / PPV)
-        var hasAccess = await _content.CheckAccessAsync(id, userId);
-        if (!hasAccess) return StatusCode(402, new { error = "subscription_required", redirectTo = "/subscribe" });
-
-        var signedUrl = await _video.GetSignedStreamUrlAsync(id, quality, userId);
-        if (signedUrl == null) return NotFound(new { error = "stream_not_ready" });
-
-        await _analytics.TrackViewStartAsync(userId, profileId, id);
-        return Ok(new { url = signedUrl.Url, playerType = signedUrl.PlayerType, youTubeVideoId = signedUrl.YouTubeVideoId, vimeoVideoId = signedUrl.VimeoVideoId, expiresAt = signedUrl.ExpiresAt });
+        var urls = await _content.GetStreamUrlsAsync(id, HttpContext.GetTenantId(), episodeId);
+        return Ok(ApiResponse<object>.Ok(urls));
     }
 
-    [HttpGet("{id}/related")]
-    [OutputCache(Duration = 1800)]
-    public async Task<IActionResult> GetRelated(int id)
+    [HttpGet("{id:guid}/related")]
+    public async Task<IActionResult> GetRelated(Guid id)
     {
-        var items = await _content.GetRelatedAsync(id);
-        return Ok(items);
+        var items = await _content.GetRelatedAsync(id, HttpContext.GetTenantId());
+        return Ok(ApiResponse<object>.Ok(items));
     }
 
-    [HttpPost("{id}/rate")]
+    [HttpPost("{id:guid}/rate")]
     [Authorize]
-    public async Task<IActionResult> RateContent(int id, [FromBody] RateRequest req)
+    public async Task<IActionResult> RateContent(Guid id, [FromBody] RateRequestDto req)
     {
-        var profileId = GetProfileId();
-        await _content.RateContentAsync(id, profileId, req.Rating);
+        await _content.RateContentAsync(HttpContext.RequireProfileId(), id, req.Rating);
         return Ok(new { message = "Rated" });
-    }
-
-    [HttpPost("{id}/review")]
-    [Authorize]
-    public async Task<IActionResult> ReviewContent(int id, [FromBody] ReviewRequest req)
-    {
-        var profileId = GetProfileId();
-        await _content.ReviewContentAsync(id, profileId, req.StarRating, req.ReviewText);
-        return Ok(new { message = "Review submitted for approval" });
-    }
-
-    private int? GetUserId() => User.Identity?.IsAuthenticated == true ? int.Parse(User.FindFirst("sub")!.Value) : null;
-    private int? GetProfileId() {
-        var claim = User.FindFirst("profileId");
-        return claim != null ? int.Parse(claim.Value) : null;
     }
 }
 
-// ── Series Controller ──
+// ── Series ──
 [ApiController]
 [Route("api/series")]
 public class SeriesController : ControllerBase
@@ -140,47 +110,46 @@ public class SeriesController : ControllerBase
     private readonly IContentService _content;
     public SeriesController(IContentService content) => _content = content;
 
-    [HttpGet("{id}/episodes")]
-    public async Task<IActionResult> GetEpisodes(int id, [FromQuery] int? season)
+    [HttpGet("{id:guid}/episodes")]
+    public async Task<IActionResult> GetEpisodes(Guid id, [FromQuery] int? season)
     {
-        var episodes = await _content.GetSeriesEpisodesAsync(id, season);
-        return Ok(episodes);
+        var seasons = await _content.GetSeriesEpisodesAsync(id, HttpContext.GetTenantId(), season);
+        return Ok(ApiResponse<object>.Ok(seasons));
     }
 }
 
-// ── Watch History Controller ──
+// ── Watch History ──
 [ApiController]
 [Route("api/watch-history")]
 [Authorize]
 public class WatchHistoryController : ControllerBase
 {
-    private readonly IWatchHistoryService _history;
-    public WatchHistoryController(IWatchHistoryService history) => _history = history;
+    private readonly IContentService _content;
+    public WatchHistoryController(IContentService content) => _content = content;
 
     [HttpGet]
-    public async Task<IActionResult> GetHistory([FromQuery] int page = 1)
+    public async Task<IActionResult> GetHistory()
     {
-        var profileId = int.Parse(User.FindFirst("profileId")!.Value);
-        return Ok(await _history.GetHistoryAsync(profileId, page));
+        var items = await _content.GetWatchHistoryAsync(HttpContext.RequireProfileId());
+        return Ok(ApiResponse<object>.Ok(items));
     }
 
     [HttpGet("continue")]
     public async Task<IActionResult> GetContinueWatching()
     {
-        var profileId = int.Parse(User.FindFirst("profileId")!.Value);
-        return Ok(await _history.GetContinueWatchingAsync(profileId));
+        var items = await _content.GetContinueWatchingAsync(HttpContext.RequireProfileId());
+        return Ok(ApiResponse<object>.Ok(items));
     }
 
-    [HttpPost("{contentId}/progress")]
-    public async Task<IActionResult> UpdateProgress(int contentId, [FromBody] ProgressRequest req)
+    [HttpPost("{contentId:guid}/progress")]
+    public async Task<IActionResult> UpdateProgress(Guid contentId, [FromBody] ProgressRequestDto req)
     {
-        var profileId = int.Parse(User.FindFirst("profileId")!.Value);
-        await _history.UpdateProgressAsync(profileId, contentId, req.WatchedSeconds, req.TotalSeconds);
+        await _content.UpdateWatchProgressAsync(HttpContext.RequireProfileId(), contentId, req.WatchedSeconds, req.EpisodeId);
         return Ok();
     }
 }
 
-// ── Watchlist Controller ──
+// ── Watchlist ──
 [ApiController]
 [Route("api/watchlist")]
 [Authorize]
@@ -190,25 +159,23 @@ public class WatchlistController : ControllerBase
     public WatchlistController(IContentService content) => _content = content;
 
     [HttpGet]
-    public async Task<IActionResult> Get([FromQuery] int page = 1)
+    public async Task<IActionResult> Get()
     {
-        var profileId = int.Parse(User.FindFirst("profileId")!.Value);
-        return Ok(await _content.GetWatchlistAsync(profileId, page));
+        var items = await _content.GetWatchlistAsync(HttpContext.RequireProfileId(), HttpContext.GetTenantId());
+        return Ok(ApiResponse<object>.Ok(items));
     }
 
     [HttpPost]
-    public async Task<IActionResult> Add([FromBody] WatchlistRequest req)
+    public async Task<IActionResult> Add([FromBody] WatchlistRequestDto req)
     {
-        var profileId = int.Parse(User.FindFirst("profileId")!.Value);
-        await _content.AddToWatchlistAsync(profileId, req.ContentId);
+        await _content.AddToWatchlistAsync(HttpContext.RequireProfileId(), req.ContentId);
         return Ok(new { message = "Added to watchlist" });
     }
 
-    [HttpDelete("{contentId}")]
-    public async Task<IActionResult> Remove(int contentId)
+    [HttpDelete("{contentId:guid}")]
+    public async Task<IActionResult> Remove(Guid contentId)
     {
-        var profileId = int.Parse(User.FindFirst("profileId")!.Value);
-        await _content.RemoveFromWatchlistAsync(profileId, contentId);
+        await _content.RemoveFromWatchlistAsync(HttpContext.RequireProfileId(), contentId);
         return Ok(new { message = "Removed from watchlist" });
     }
 }

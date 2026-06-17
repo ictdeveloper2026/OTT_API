@@ -27,10 +27,10 @@
 
     <!-- Hangfire -->
     <PackageReference Include="Hangfire.AspNetCore" Version="1.8.9" />
-    <PackageReference Include="Hangfire.MySqlStorage" Version="2.0.3" />
+    <PackageReference Include="Hangfire.SqlServer" Version="1.8.9" />
 
     <!-- Health Checks -->
-    <PackageReference Include="AspNetCore.HealthChecks.MySql" Version="8.0.0" />
+    <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.0" />
     <PackageReference Include="AspNetCore.HealthChecks.Redis" Version="8.0.0" />
 
     <!-- Rate Limiting -->
@@ -39,18 +39,6 @@
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
-  </ItemGroup>
-
-  <!--
-    TEMPORARY: these controllers were written against a different (non-existent) service
-    architecture (int IDs, result objects, IPaymentService/IAdminService/etc. that don't exist).
-    Excluded from the build until they are migrated to the canonical design, the way
-    AuthController and AdditionalControllers already are. Remove entries here as each is migrated.
-  -->
-  <ItemGroup>
-    <Compile Remove="Controllers\AdminController.cs" />
-    <Compile Remove="Controllers\SubscriptionController.cs" />
-    <Compile Remove="Controllers\ContentsController.cs" />
   </ItemGroup>
 
   <ItemGroup>

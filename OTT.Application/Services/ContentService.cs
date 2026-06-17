@@ -21,6 +21,12 @@ public interface IContentService
     Task<List<ContentListItemDto>> GetContinueWatchingAsync(Guid profileId);
     Task<List<ContentListItemDto>> GetWatchlistAsync(Guid profileId, Guid tenantId);
     Task<List<ContentListItemDto>> GetRecommendationsAsync(Guid profileId, Guid tenantId);
+    Task<List<ContentListItemDto>> GetFeaturedAsync(Guid tenantId);
+    Task<PagedResultDto<ContentListItemDto>> GetTrendingAsync(Guid tenantId, int page, int pageSize);
+    Task<PagedResultDto<ContentListItemDto>> GetNewReleasesAsync(Guid tenantId, int page, int pageSize);
+    Task<List<ContentListItemDto>> GetRelatedAsync(Guid contentId, Guid tenantId);
+    Task<List<SeasonDto>> GetSeriesEpisodesAsync(Guid contentId, Guid tenantId, int? season);
+    Task<List<ContentListItemDto>> GetWatchHistoryAsync(Guid profileId);
     // Admin
     Task<ContentDetailDto> CreateContentAsync(CreateContentDto dto, Guid tenantId);
     Task<ContentDetailDto> UpdateContentAsync(Guid contentId, CreateContentDto dto);
@@ -264,6 +270,92 @@ public class ContentService : IContentService
             .ToListAsync();
 
         return new PagedResultDto<ContentListItemDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
+    }
+
+    public async Task<List<ContentListItemDto>> GetFeaturedAsync(Guid tenantId)
+    {
+        var items = await _db.Contents
+            .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
+            .Where(c => c.TenantId == tenantId && c.Status == "published" && c.IsFeatured)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(20)
+            .ToListAsync();
+        return items.Select(MapContentListItem).ToList();
+    }
+
+    public async Task<PagedResultDto<ContentListItemDto>> GetTrendingAsync(Guid tenantId, int page, int pageSize)
+    {
+        var query = _db.Contents
+            .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
+            .Where(c => c.TenantId == tenantId && c.Status == "published");
+
+        var total = await query.CountAsync();
+        var list = await query
+            .OrderByDescending(c => c.IsTrending).ThenByDescending(c => c.ViewCount)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .ToListAsync();
+
+        return new PagedResultDto<ContentListItemDto>
+        {
+            Items = list.Select(MapContentListItem).ToList(),
+            TotalCount = total, Page = page, PageSize = pageSize
+        };
+    }
+
+    public async Task<PagedResultDto<ContentListItemDto>> GetNewReleasesAsync(Guid tenantId, int page, int pageSize)
+    {
+        var query = _db.Contents
+            .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
+            .Where(c => c.TenantId == tenantId && c.Status == "published");
+
+        var total = await query.CountAsync();
+        var list = await query
+            .OrderByDescending(c => c.PublishedAt).ThenByDescending(c => c.CreatedAt)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .ToListAsync();
+
+        return new PagedResultDto<ContentListItemDto>
+        {
+            Items = list.Select(MapContentListItem).ToList(),
+            TotalCount = total, Page = page, PageSize = pageSize
+        };
+    }
+
+    public async Task<List<ContentListItemDto>> GetRelatedAsync(Guid contentId, Guid tenantId)
+    {
+        var genreIds = await _db.ContentGenres
+            .Where(cg => cg.ContentId == contentId)
+            .Select(cg => cg.GenreId)
+            .ToListAsync();
+
+        var items = await _db.Contents
+            .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
+            .Where(c => c.TenantId == tenantId && c.Status == "published" && c.Id != contentId
+                && c.ContentGenres.Any(cg => genreIds.Contains(cg.GenreId)))
+            .OrderByDescending(c => c.AverageRating)
+            .Take(12)
+            .ToListAsync();
+        return items.Select(MapContentListItem).ToList();
+    }
+
+    public async Task<List<SeasonDto>> GetSeriesEpisodesAsync(Guid contentId, Guid tenantId, int? season)
+    {
+        var detail = await GetContentDetailAsync(contentId, tenantId);
+        var seasons = detail.Seasons;
+        return season.HasValue
+            ? seasons.Where(s => s.SeasonNumber == season.Value).ToList()
+            : seasons;
+    }
+
+    public async Task<List<ContentListItemDto>> GetWatchHistoryAsync(Guid profileId)
+    {
+        var contents = await _db.WatchHistories
+            .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
+            .Where(w => w.ProfileId == profileId)
+            .OrderByDescending(w => w.LastWatchedAt)
+            .Select(w => w.Content)
+            .ToListAsync();
+        return contents.Select(MapContentListItem).ToList();
     }
 
     public async Task<StreamUrlsDto> GetStreamUrlsAsync(Guid contentId, Guid tenantId, Guid? episodeId = null)

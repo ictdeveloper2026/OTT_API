@@ -1,171 +1,109 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using OTT.Application.DTOs.Subscription;
-using OTT.Application.Interfaces;
+using OTT.API.Middleware;
+using OTT.Application.DTOs;
+using OTT.Application.Services;
 
 namespace OTT.API.Controllers;
+
+// Request bodies
+public record CancelSubscriptionRequestDto(string? Reason);
+public record ValidatePromoRequestDto(string Code, Guid PlanId);
+public record GoogleIapRequestDto(string ProductId, string PurchaseToken);
+public record AppleIapRequestDto(string ReceiptData);
 
 [ApiController]
 [Route("api")]
 public class SubscriptionController : ControllerBase
 {
     private readonly ISubscriptionService _sub;
-    private readonly IPaymentService _payment;
-    private readonly INotificationService _notif;
 
-    public SubscriptionController(ISubscriptionService sub, IPaymentService payment, INotificationService notif)
-    {
-        _sub = sub; _payment = payment; _notif = notif;
-    }
+    public SubscriptionController(ISubscriptionService sub) => _sub = sub;
 
     // ── Plans ──
     [HttpGet("plans")]
     public async Task<IActionResult> GetPlans()
     {
-        var plans = await _sub.GetActivePlansAsync();
-        return Ok(plans);
+        var plans = await _sub.GetPlansAsync(HttpContext.GetTenantId());
+        return Ok(ApiResponse<object>.Ok(plans));
     }
 
-    // ── My Subscription ──
+    // ── My subscription ──
     [HttpGet("subscriptions/me")]
     [Authorize]
     public async Task<IActionResult> GetMySubscription()
     {
-        var userId = GetUserId();
-        var sub = await _sub.GetUserSubscriptionAsync(userId);
-        return Ok(sub);
+        var sub = await _sub.GetActiveSubscriptionAsync(HttpContext.RequireUserId());
+        return Ok(ApiResponse<object?>.Ok(sub));
     }
 
-    // ── Initiate Razorpay / Stripe ──
+    // ── Create order (Razorpay / Stripe) ──
     [HttpPost("subscriptions/initiate")]
     [Authorize]
-    public async Task<IActionResult> Initiate([FromBody] InitiateSubscriptionRequest req)
+    public async Task<IActionResult> Initiate([FromBody] CreateOrderDto dto)
     {
-        var userId = GetUserId();
-        var result = await _payment.InitiateSubscriptionPaymentAsync(userId, req.PlanId, req.Gateway, req.PromoCode);
-        if (!result.Success) return BadRequest(new { error = result.Error });
-        return Ok(new {
-            orderId = result.GatewayOrderId,
-            amount = result.Amount,
-            currency = result.Currency,
-            gatewayKey = result.GatewayKey,
-            subscriptionId = result.SubscriptionId
-        });
+        var order = await _sub.CreateOrderAsync(dto, HttpContext.RequireUserId(), HttpContext.GetTenantId());
+        return Ok(ApiResponse<object>.Ok(order));
     }
 
-    // ── Confirm Razorpay ──
+    // ── Confirm payment ──
     [HttpPost("subscriptions/confirm")]
     [Authorize]
-    public async Task<IActionResult> ConfirmRazorpay([FromBody] ConfirmPaymentRequest req)
+    public async Task<IActionResult> Confirm([FromBody] VerifyPaymentDto dto)
     {
-        var userId = GetUserId();
-        var result = await _payment.ConfirmSubscriptionPaymentAsync(userId, req);
-        if (!result.Success) return BadRequest(new { error = result.Error });
-        // Send welcome email
-        await _notif.SendSubscriptionConfirmationAsync(userId, result.PlanName!);
-        return Ok(new { message = "Subscription activated", subscription = result.Subscription });
+        var result = await _sub.VerifyPaymentAsync(dto, HttpContext.RequireUserId(), HttpContext.GetTenantId());
+        return Ok(ApiResponse<object>.Ok(result));
     }
 
-    // ── IAP (Google Play / App Store) ──
+    // ── Cancel (auto-renew off; access continues to period end) ──
+    [HttpPost("subscriptions/cancel")]
+    [Authorize]
+    public async Task<IActionResult> Cancel([FromBody] CancelSubscriptionRequestDto req)
+    {
+        var userId = HttpContext.RequireUserId();
+        var active = await _sub.GetActiveSubscriptionAsync(userId);
+        if (active == null) return NotFound(new { error = "No active subscription" });
+
+        await _sub.CancelSubscriptionAsync(active.Id, userId);
+        return Ok(new { message = "Auto-renewal cancelled. Access continues until the period ends." });
+    }
+
+    // ── In-App Purchases ──
     [HttpPost("subscriptions/iap/google")]
     [Authorize]
-    public async Task<IActionResult> ConfirmGoogleIAP([FromBody] GoogleIAPRequest req)
+    public async Task<IActionResult> ConfirmGoogleIap([FromBody] GoogleIapRequestDto req)
     {
-        var userId = GetUserId();
-        var result = await _payment.VerifyGooglePlayPurchaseAsync(userId, req.ProductId, req.PurchaseToken);
-        if (!result.Success) return BadRequest(new { error = result.Error });
-        return Ok(new { message = "Subscription activated via Google Play" });
+        var receipt = $"{req.ProductId}:{req.PurchaseToken}";
+        var ok = await _sub.VerifyIapReceiptAsync(receipt, "android", HttpContext.RequireUserId(), HttpContext.GetTenantId());
+        return ok ? Ok(new { message = "Subscription activated via Google Play" })
+                  : BadRequest(new { error = "Receipt verification failed" });
     }
 
     [HttpPost("subscriptions/iap/apple")]
     [Authorize]
-    public async Task<IActionResult> ConfirmAppleIAP([FromBody] AppleIAPRequest req)
+    public async Task<IActionResult> ConfirmAppleIap([FromBody] AppleIapRequestDto req)
     {
-        var userId = GetUserId();
-        var result = await _payment.VerifyApplePurchaseAsync(userId, req.ReceiptData);
-        if (!result.Success) return BadRequest(new { error = result.Error });
-        return Ok(new { message = "Subscription activated via App Store" });
+        var ok = await _sub.VerifyIapReceiptAsync(req.ReceiptData, "ios", HttpContext.RequireUserId(), HttpContext.GetTenantId());
+        return ok ? Ok(new { message = "Subscription activated via App Store" })
+                  : BadRequest(new { error = "Receipt verification failed" });
     }
 
-    [HttpPost("subscriptions/cancel")]
-    [Authorize]
-    public async Task<IActionResult> Cancel([FromBody] CancelSubscriptionRequest req)
-    {
-        var userId = GetUserId();
-        var result = await _sub.CancelSubscriptionAsync(userId, req.Reason);
-        if (!result.Success) return BadRequest(new { error = result.Error });
-        return Ok(new { message = "Auto-renewal cancelled. Access continues until period end." });
-    }
-
-    // ── PPV ──
-    [HttpPost("ppv/{contentId}/purchase")]
-    [Authorize]
-    public async Task<IActionResult> InitiatePPV(int contentId)
-    {
-        var userId = GetUserId();
-        var result = await _payment.InitiatePPVPaymentAsync(userId, contentId, null);
-        if (!result.Success) return BadRequest(new { error = result.Error });
-        return Ok(new { orderId = result.GatewayOrderId, amount = result.Amount, currency = result.Currency });
-    }
-
-    [HttpPost("ppv/confirm")]
-    [Authorize]
-    public async Task<IActionResult> ConfirmPPV([FromBody] ConfirmPaymentRequest req)
-    {
-        var userId = GetUserId();
-        var result = await _payment.ConfirmPPVPaymentAsync(userId, req);
-        if (!result.Success) return BadRequest(new { error = result.Error });
-        return Ok(new { message = "PPV purchase successful", accessUntil = result.AccessExpiresAt });
-    }
-
-    // ── Promo Code Validation ──
+    // ── Promo validation ──
     [HttpPost("promo/validate")]
     [Authorize]
-    public async Task<IActionResult> ValidatePromo([FromBody] ValidatePromoRequest req)
+    public async Task<IActionResult> ValidatePromo([FromBody] ValidatePromoRequestDto req)
     {
-        var result = await _sub.ValidatePromoCodeAsync(req.Code, req.PlanId);
-        if (!result.Valid) return BadRequest(new { error = result.Error });
-        return Ok(new { discountType = result.DiscountType, discountValue = result.DiscountValue, finalAmount = result.FinalAmount });
+        var (success, discount) = await _sub.ApplyPromoCodeAsync(req.Code, HttpContext.GetTenantId(), req.PlanId);
+        if (!success) return BadRequest(new { valid = false, error = "Invalid or expired promo code" });
+        return Ok(new { valid = true, discountAmount = discount });
     }
 
-    // ── Invoices ──
+    // ── Invoices / payment history ──
     [HttpGet("invoices")]
     [Authorize]
-    public async Task<IActionResult> GetInvoices([FromQuery] int page = 1)
+    public async Task<IActionResult> GetInvoices()
     {
-        var userId = GetUserId();
-        return Ok(await _payment.GetInvoicesAsync(userId, page));
+        var history = await _sub.GetPaymentHistoryAsync(HttpContext.RequireUserId());
+        return Ok(ApiResponse<object>.Ok(history));
     }
-
-    // ── Razorpay Webhook ──
-    [HttpPost("webhooks/razorpay")]
-    [AllowAnonymous]
-    public async Task<IActionResult> RazorpayWebhook()
-    {
-        var body = await new StreamReader(Request.Body).ReadToEndAsync();
-        var signature = Request.Headers["X-Razorpay-Signature"].ToString();
-        var result = await _payment.ProcessRazorpayWebhookAsync(body, signature);
-        return result ? Ok() : BadRequest();
-    }
-
-    // ── Google Play Webhook ──
-    [HttpPost("webhooks/google-play")]
-    [AllowAnonymous]
-    public async Task<IActionResult> GooglePlayWebhook([FromBody] object payload)
-    {
-        await _payment.ProcessGooglePlayWebhookAsync(payload.ToString()!);
-        return Ok();
-    }
-
-    // ── App Store Webhook ──
-    [HttpPost("webhooks/app-store")]
-    [AllowAnonymous]
-    public async Task<IActionResult> AppStoreWebhook()
-    {
-        var body = await new StreamReader(Request.Body).ReadToEndAsync();
-        await _payment.ProcessAppStoreWebhookAsync(body);
-        return Ok();
-    }
-
-    private int GetUserId() => int.Parse(User.FindFirst("sub")!.Value);
 }

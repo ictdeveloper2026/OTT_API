@@ -59,7 +59,7 @@ public class OttDbContext : DbContext
             e.Property(x => x.Slug).HasMaxLength(100).IsRequired();
             e.Property(x => x.Domain).HasMaxLength(255);
             e.Property(x => x.Plan).HasMaxLength(50).HasDefaultValue("basic");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // BrandingConfig
@@ -82,7 +82,7 @@ public class OttDbContext : DbContext
             e.Property(x => x.Email).HasMaxLength(255).IsRequired();
             e.Property(x => x.Role).HasMaxLength(50).HasDefaultValue("viewer");
             e.Property(x => x.AuthProvider).HasMaxLength(50).HasDefaultValue("local");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // UserProfile
@@ -114,7 +114,7 @@ public class OttDbContext : DbContext
             e.Property(x => x.AgeRating).HasMaxLength(20).HasDefaultValue("PG");
             e.Property(x => x.AverageRating).HasPrecision(3, 2);
             e.Property(x => x.Price).HasPrecision(10, 2);
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // Season
@@ -207,7 +207,7 @@ public class OttDbContext : DbContext
             e.Property(x => x.Title).HasMaxLength(500).IsRequired();
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("offline");
             e.Property(x => x.StreamKey).HasMaxLength(200);
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // SubscriptionPlan
@@ -240,7 +240,7 @@ public class OttDbContext : DbContext
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("pending");
             e.Property(x => x.Amount).HasPrecision(10, 2);
             e.Property(x => x.Currency).HasMaxLength(10).HasDefaultValue("INR");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // PromoCode
@@ -281,7 +281,7 @@ public class OttDbContext : DbContext
             e.HasIndex(x => x.Code).IsUnique();
             e.Property(x => x.Code).HasMaxLength(20).IsRequired();
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("active");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // WatchPartyMember
@@ -297,7 +297,7 @@ public class OttDbContext : DbContext
             e.HasOne(x => x.User).WithMany(u => u.Notifications).HasForeignKey(x => x.UserId);
             e.Property(x => x.Title).HasMaxLength(500).IsRequired();
             e.Property(x => x.Type).HasMaxLength(50).HasDefaultValue("info");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // DeviceToken
@@ -324,7 +324,7 @@ public class OttDbContext : DbContext
             e.HasIndex(x => x.EventType);
             e.HasIndex(x => x.CreatedAt);
             e.Property(x => x.EventType).HasMaxLength(100).IsRequired();
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // ContentAnalytics
@@ -346,6 +346,11 @@ public class OttDbContext : DbContext
         modelBuilder.Entity<Content>().HasQueryFilter(x => !x.IsDeleted);
         modelBuilder.Entity<User>().HasQueryFilter(x => !x.IsDeleted);
         modelBuilder.Entity<LiveStream>().HasQueryFilter(x => !x.IsDeleted);
+
+        // SQL Server (unlike MySQL) rejects multiple cascade paths / cycles (error 1785).
+        // Disable cascade delete globally; deletes are handled explicitly in services.
+        foreach (var fk in modelBuilder.Model.GetEntityTypes().SelectMany(e => e.GetForeignKeys()))
+            fk.DeleteBehavior = DeleteBehavior.Restrict;
     }
 
     public override int SaveChanges()

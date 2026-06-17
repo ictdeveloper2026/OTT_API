@@ -30,7 +30,7 @@ builder.Host.UseSerilog();
 // ── Database ──────────────────────────────────────────────────────────────────
 var connStr = builder.Configuration.GetConnectionString("DefaultConnection")!;
 builder.Services.AddDbContext<OttDbContext>(opts =>
-    opts.UseMySql(connStr, ServerVersion.AutoDetect(connStr),
+    opts.UseSqlServer(connStr,
         o => o.EnableRetryOnFailure(3).CommandTimeout(30)));
 
 // ── Redis ─────────────────────────────────────────────────────────────────────
@@ -89,11 +89,12 @@ builder.Services.AddHangfire(cfg => cfg
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
-    .UseStorage(new Hangfire.MySql.MySqlStorage(connStr, new Hangfire.MySql.MySqlStorageOptions
+    .UseSqlServerStorage(connStr, new Hangfire.SqlServer.SqlServerStorageOptions
     {
-        TablesPrefix = "Hangfire_",
-        QueuePollInterval = TimeSpan.FromSeconds(5)
-    })));
+        SchemaName = "HangFire",
+        QueuePollInterval = TimeSpan.FromSeconds(5),
+        PrepareSchemaIfNecessary = true
+    }));
 builder.Services.AddHangfireServer(opts => opts.WorkerCount = 4);
 
 // ── AWS S3 / S3-compatible storage ─────────────────────────────────────────────
@@ -149,7 +150,7 @@ builder.Services.AddTransient<CleanupJob>();
 
 // ── Health Checks ─────────────────────────────────────────────────────────────
 builder.Services.AddHealthChecks()
-    .AddMySql(connStr, name: "mysql")
+    .AddSqlServer(connStr, name: "sqlserver")
     .AddRedis(redisConn, name: "redis");
 
 // ── Swagger ───────────────────────────────────────────────────────────────────
@@ -174,7 +175,14 @@ builder.Services.AddSwaggerGen(opts =>
     });
 });
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(o =>
+    {
+        // EF entities returned raw can form Tenant<->children navigation cycles
+        // (TenantMiddleware tracks the Tenant). Ignore cycles instead of throwing.
+        o.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
+        o.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+    });
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient();
@@ -222,13 +230,23 @@ using (var scope = app.Services.CreateScope())
         var db = scope.ServiceProvider.GetRequiredService<OttDbContext>();
         await db.Database.MigrateAsync();
         Log.Information("Database migrations applied");
+
+        await DbSeeder.SeedAsync(db, builder.Configuration);
+        Log.Information("Database seeded (default tenant, branding, admin, plan)");
     }
     catch (Exception ex)
     {
-        Log.Warning(ex, "Database migration skipped: {Message}", ex.Message);
+        Log.Warning(ex, "Database migration/seed skipped: {Message}", ex.Message);
     }
 }
 
-HangfireScheduler.ConfigureRecurringJobs();
+try
+{
+    HangfireScheduler.ConfigureRecurringJobs();
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Recurring job scheduling skipped: {Message}", ex.Message);
+}
 Log.Information("OTT Platform API started on {Env}", app.Environment.EnvironmentName);
 await app.RunAsync();
