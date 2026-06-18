@@ -201,7 +201,9 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors("AllowAll");
 app.UseStaticFiles(); // serves wwwroot (incl. /uploads for the local storage provider)
-app.UseHttpsRedirection();
+// clients (and trips up self-signed dev certs). Keep the redirect for production only.
+if (!app.Environment.IsDevelopment())
+    app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseMiddleware<TenantMiddleware>();
