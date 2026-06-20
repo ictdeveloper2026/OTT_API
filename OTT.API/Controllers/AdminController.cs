@@ -64,12 +64,16 @@ public class AdminController : ControllerBase
         var days = period switch { "7d" => 7, "90d" => 90, "365d" => 365, _ => 30 };
         var since = DateTime.UtcNow.Date.AddDays(-days);
 
-        var rows = await _db.Payments
+        // Fetch then group in memory — SQL Server can't translate GroupBy(date)+ToString.
+        var payments = await _db.Payments
             .Where(p => p.TenantId == tenantId && p.Status == "success" && p.CreatedAt >= since)
+            .Select(p => new { p.CreatedAt, p.Amount })
+            .ToListAsync();
+        var rows = payments
             .GroupBy(p => p.CreatedAt.Date)
             .Select(g => new RevenueChartDto { Label = g.Key.ToString("yyyy-MM-dd"), Amount = g.Sum(x => x.Amount) })
             .OrderBy(r => r.Label)
-            .ToListAsync();
+            .ToList();
         return Ok(ApiResponse<object>.Ok(rows));
     }
 
