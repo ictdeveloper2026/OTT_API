@@ -23,6 +23,7 @@ public interface IAuthService
     Task<bool> ResetPasswordAsync(ResetPasswordDto request);
     Task<bool> ChangePasswordAsync(Guid userId, ChangePasswordDto request);
     Task<bool> VerifyEmailAsync(string token);
+    Task<AuthResponseDto> SelectProfileAsync(Guid userId, Guid profileId);
 }
 
 public class AuthService : IAuthService
@@ -320,6 +321,27 @@ public class AuthService : IAuthService
         await _cache.RemoveAsync($"email_verify:{token}");
         await _db.SaveChangesAsync();
         return true;
+    }
+
+    public async Task<AuthResponseDto> SelectProfileAsync(Guid userId, Guid profileId)
+    {
+        var user = await _db.Users.Include(u => u.Profiles)
+            .FirstOrDefaultAsync(u => u.Id == userId && !u.IsDeleted)
+            ?? throw new UnauthorizedAccessException("User not found");
+
+        var profile = user.Profiles.FirstOrDefault(p => p.Id == profileId)
+            ?? throw new KeyNotFoundException("Profile not found");
+
+        // Issue a new access token that carries the selected profile.
+        var accessToken = _jwt.GenerateAccessToken(user, profile.Id.ToString());
+        return new AuthResponseDto
+        {
+            AccessToken = accessToken,
+            RefreshToken = "",
+            ExpiresIn = 3600,
+            User = MapUserDto(user),
+            Profiles = user.Profiles.Select(MapProfileDto).ToList()
+        };
     }
 
     // ── Private Helpers ──────────────────────────────────────────────────────

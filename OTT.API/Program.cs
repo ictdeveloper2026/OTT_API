@@ -38,7 +38,12 @@ var redisConn = builder.Configuration.GetConnectionString("Redis")!;
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 {
     var options = ConfigurationOptions.Parse(redisConn);
-    options.AbortOnConnectFail = false; // don't crash at startup if Redis is down; keep retrying
+    options.AbortOnConnectFail = false; // don't crash at startup if Redis is down
+    // Fail fast when Redis isn't running so cached endpoints (e.g. /api/plans) fall
+    // through to the database in ~1s instead of hanging on connect/sync timeouts.
+    options.ConnectTimeout = 800;
+    options.SyncTimeout = 800;
+    options.ConnectRetry = 0;
     return ConnectionMultiplexer.Connect(options);
 });
 builder.Services.AddSingleton<IRedisCacheService, RedisCacheService>();

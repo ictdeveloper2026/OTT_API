@@ -12,6 +12,7 @@ public record RefreshTokenRequestDto(string RefreshToken);
 public record ForgotPasswordRequestDto(string Email);
 public record LogoutRequestDto(string RefreshToken);
 public record SendOtpRequestDto(string Email);
+public record SelectProfileRequestDto(Guid ProfileId);
 
 public class AuthResponseDto
 {

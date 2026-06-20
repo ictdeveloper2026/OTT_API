@@ -96,4 +96,14 @@ public class AuthController : ControllerBase
         await _auth.LogoutAsync(req.RefreshToken);
         return Ok(new { message = "Logged out" });
     }
+
+    // Issues a fresh token carrying the selected profile (so profile-scoped
+    // features like watchlist / continue-watching work).
+    [HttpPost("select-profile")]
+    [Authorize]
+    public async Task<IActionResult> SelectProfile([FromBody] SelectProfileRequestDto req)
+    {
+        var result = await _auth.SelectProfileAsync(HttpContext.RequireUserId(), req.ProfileId);
+        return Ok(result);
+    }
 }

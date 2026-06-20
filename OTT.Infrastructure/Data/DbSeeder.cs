@@ -81,5 +81,39 @@ public static class DbSeeder
         }
 
         await db.SaveChangesAsync();
+
+        // Give the admin a default profile (needed for watchlist / continue-watching).
+        var admin = await db.Users.FirstOrDefaultAsync(u => u.TenantId == tenant.Id && u.Role == "admin");
+        if (admin != null && !await db.UserProfiles.AnyAsync(p => p.UserId == admin.Id))
+        {
+            db.UserProfiles.Add(new UserProfile
+            {
+                UserId = admin.Id,
+                Name = admin.FirstName ?? "Me",
+                IsDefault = true,
+                MaturityLevel = "all"
+            });
+        }
+
+        // A sample live channel so the Live tab has content.
+        if (!await db.LiveStreams.AnyAsync(l => l.TenantId == tenant.Id))
+        {
+            db.LiveStreams.Add(new LiveStream
+            {
+                TenantId = tenant.Id,
+                CreatedByUserId = admin?.Id ?? Guid.Empty,
+                Title = "OTT News 24/7",
+                Description = "Round-the-clock news channel.",
+                ThumbnailUrl = "https://picsum.photos/seed/live1/640/360",
+                Category = "News",
+                StreamProvider = "youtube",
+                Status = "live",
+                ViewerCount = 1280,
+                StartedAt = DateTime.UtcNow.AddHours(-2),
+                PlaybackUrl = "https://flutter.github.io/assets-for-api-docs/assets/videos/bee.mp4"
+            });
+        }
+
+        await db.SaveChangesAsync();
     }
 }

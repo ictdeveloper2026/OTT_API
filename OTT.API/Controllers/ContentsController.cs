@@ -93,6 +93,13 @@ public class ContentsController : ControllerBase
         return Ok(ApiResponse<object>.Ok(items));
     }
 
+    [HttpGet("genre/{genreId:guid}")]
+    public async Task<IActionResult> GetByGenre(Guid genreId, [FromQuery] int page = 1, [FromQuery] int pageSize = 30)
+    {
+        var result = await _content.GetByGenreAsync(genreId, HttpContext.GetTenantId(), page, pageSize);
+        return Ok(ApiResponse<object>.Ok(result));
+    }
+
     [HttpPost("{id:guid}/rate")]
     [Authorize]
     public async Task<IActionResult> RateContent(Guid id, [FromBody] RateRequestDto req)
