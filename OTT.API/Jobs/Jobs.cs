@@ -204,5 +204,11 @@ public static class HangfireScheduler
             "analytics-cleanup",
             job => job.CleanOldAnalyticsAsync(),
             "0 4 * * 0");
+
+        // IPTV channel sync from iptv-org - daily at 5am (keeps the channel list fresh)
+        RecurringJob.AddOrUpdate<OTT.Infrastructure.Services.IIptvSyncService>(
+            "iptv-sync",
+            job => job.SyncAsync(null),
+            "0 5 * * *");
     }
 }
