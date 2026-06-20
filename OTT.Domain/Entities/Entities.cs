@@ -594,6 +594,23 @@ namespace OTT.Domain.Entities
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     }
 
+    // ── IPTV channels (synced from iptv-org) ───────────────────────────────────
+    public class IptvChannel
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public string ChannelId { get; set; } = "";   // iptv-org channel id
+        public string Name { get; set; } = "";
+        public string? Country { get; set; }           // ISO 2-letter code
+        public string? CountryName { get; set; }
+        public string? Languages { get; set; }         // csv of language codes
+        public string? Categories { get; set; }        // csv of category ids
+        public string? LogoUrl { get; set; }
+        public string StreamUrl { get; set; } = "";
+        public string? Quality { get; set; }
+        public bool IsNsfw { get; set; }
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    }
+
     // ── Storage (admin-configurable, hot-reloadable) ───────────────────────────
     public class StorageConfiguration
     {

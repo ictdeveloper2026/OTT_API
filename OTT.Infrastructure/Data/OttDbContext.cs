@@ -45,6 +45,7 @@ public class OttDbContext : DbContext
     public DbSet<CreatorApplication> CreatorApplications => Set<CreatorApplication>();
     public DbSet<ParentalControl> ParentalControls => Set<ParentalControl>();
     public DbSet<StorageConfiguration> StorageConfigurations => Set<StorageConfiguration>();
+    public DbSet<IptvChannel> IptvChannels => Set<IptvChannel>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

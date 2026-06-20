@@ -147,6 +147,8 @@ builder.Services.AddScoped<ICloudFrontCdnService, CloudFrontCdnService>();
 builder.Services.AddSingleton<IStorageService, DynamicStorageService>();
 // Admin-configurable, hot-reloadable per-tenant settings (payments, email, social, feature flags)
 builder.Services.AddSingleton<IDynamicSettingsService, DynamicSettingsService>();
+// IPTV channel sync (iptv-org)
+builder.Services.AddScoped<IIptvSyncService, IptvSyncService>();
 builder.Services.AddSingleton<IHubService, HubService>();
 builder.Services.AddTransient<TranscodingJob>();
 builder.Services.AddTransient<SubscriptionRenewalJob>();
