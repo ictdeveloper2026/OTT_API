@@ -45,6 +45,8 @@ public class StreamSessionServiceTests
         public Task HashIncrementAsync(string key, string field, long value = 1) => Task.CompletedTask;
         public Task HashSetAsync(string key, string field, string value) => Task.CompletedTask;
         public Task<Dictionary<string, string>> HashGetAllAndClearAsync(string key) => Task.FromResult(new Dictionary<string, string>());
+        public Task ListPushAsync(string key, string value) => Task.CompletedTask;
+        public Task<List<string>> ListDrainAsync(string key, int max) => Task.FromResult(new List<string>());
     }
 
     private static async Task<(OttDbContext db, Guid userId)> SeedAsync(int? planMaxStreams)

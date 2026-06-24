@@ -300,6 +300,10 @@ builder.Services.AddControllers()
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient();
+// Apply retry + timeout + circuit breaker to every factory-created HttpClient so a slow
+// payment/social/IAP/live gateway can't stall request threads or cascade failures.
+builder.Services.AddTransient<OTT.API.Http.ResilienceHandler>();
+builder.Services.ConfigureHttpClientDefaults(b => b.AddHttpMessageHandler<OTT.API.Http.ResilienceHandler>());
 
 // ── Firebase (push notifications) ──────────────────────────────────────────────
 // NotificationService sends via FirebaseMessaging.DefaultInstance, which requires an

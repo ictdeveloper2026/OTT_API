@@ -202,6 +202,17 @@ public class ContentService : IContentService
         // A recurring job (WriteBehindFlushJob) folds these into Contents.ViewCount.
         await _cache.HashIncrementAsync("views:pending", contentId.ToString());
 
+        // Emit a granular content_view event into the append-only analytics buffer. The flush
+        // job batch-inserts these into AnalyticsEvents, which AnalyticsJob turns into UniqueViewers.
+        await _cache.ListPushAsync("analytics:pending", System.Text.Json.JsonSerializer.Serialize(new AnalyticsEventBuffer
+        {
+            TenantId = tenantId,
+            ViewerId = profileId,
+            ContentId = contentId,
+            EventType = "content_view",
+            CreatedAt = DateTime.UtcNow
+        }));
+
         return dto;
     }
 

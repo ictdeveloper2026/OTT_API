@@ -389,16 +389,22 @@ public class SubscriptionService : ISubscriptionService
                 .Where(p => p.Code == promoCode && p.TenantId == tenantId)
                 .ExecuteUpdateAsync(s => s.SetProperty(p => p.UsedCount, p => p.UsedCount + 1));
 
-        // Confirmation email is a side effect — must never fail the (already-committed) payment.
+        // Confirmation notifications are a side effect — must never fail the (already-committed)
+        // payment. Email and push are both enqueued to the outbox, so this never blocks the request.
         try
         {
             var user = await _db.Users.FindAsync(userId);
             if (user != null)
                 await _notifications.SendSubscriptionConfirmationAsync(user.Email, user.FirstName ?? "User", plan.Name, sub.EndDate);
+
+            await _notifications.SendPushNotificationAsync(userId,
+                "Subscription active",
+                $"Your {plan.Name} plan is now active. Enjoy unlimited streaming!",
+                new Dictionary<string, string> { ["type"] = "subscription", ["planId"] = plan.Id.ToString() });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Subscription confirmation email failed for user {UserId} (payment already recorded)", userId);
+            _logger.LogError(ex, "Subscription confirmation notification failed for user {UserId} (payment already recorded)", userId);
         }
 
         return MapSubscriptionDto(sub);

@@ -74,33 +74,40 @@ public class AnalyticsJob
         _logger.LogInformation("Aggregating analytics data");
         var today = DateTime.UtcNow.Date;
 
-        // Aggregate content views per day
-        var viewEvents = await _db.AnalyticsEvents
+        // Distinct viewers per title today. Views/TotalWatchSeconds are owned by the write-behind
+        // job; this job owns UniqueViewers (a metric the dashboards otherwise never get), so the
+        // two paths don't fight over the same column.
+        var viewerPairs = await _db.AnalyticsEvents
             .Where(e => e.EventType == "content_view"
-                && e.CreatedAt >= today
-                && e.CreatedAt < today.AddDays(1))
-            .GroupBy(e => e.ContentId)
-            .Select(g => new { ContentId = g.Key, Views = g.Count() })
+                && e.ContentId != null && e.UserId != null
+                && e.CreatedAt >= today && e.CreatedAt < today.AddDays(1))
+            .Select(e => new { e.ContentId, e.UserId })
+            .Distinct()
             .ToListAsync();
 
-        foreach (var item in viewEvents.Where(i => i.ContentId.HasValue))
+        var uniqueViewers = viewerPairs
+            .GroupBy(p => p.ContentId!.Value)
+            .Select(g => new { ContentId = g.Key, Unique = g.Count() })
+            .ToList();
+
+        foreach (var item in uniqueViewers)
         {
             var analytics = await _db.ContentAnalytics
-                .FirstOrDefaultAsync(a => a.ContentId == item.ContentId!.Value && a.Date == today);
+                .FirstOrDefaultAsync(a => a.ContentId == item.ContentId && a.Date == today);
 
             if (analytics == null)
             {
                 analytics = new Domain.Entities.ContentAnalytics
                 {
-                    ContentId = item.ContentId!.Value,
+                    ContentId = item.ContentId,
                     Date = today,
-                    Views = item.Views
+                    UniqueViewers = item.Unique
                 };
                 _db.ContentAnalytics.Add(analytics);
             }
             else
             {
-                analytics.Views = item.Views;
+                analytics.UniqueViewers = item.Unique;
             }
         }
 
@@ -130,7 +137,7 @@ public class AnalyticsJob
         }
 
         await _db.SaveChangesAsync();
-        _logger.LogInformation("Analytics aggregation complete, processed {Count} content items", viewEvents.Count);
+        _logger.LogInformation("Analytics aggregation complete, processed {Count} content items", uniqueViewers.Count);
     }
 }
 
@@ -198,6 +205,40 @@ public class WriteBehindFlushJob
     {
         await FlushViewCountsAsync();
         await FlushWatchProgressAsync();
+        await FlushAnalyticsEventsAsync();
+    }
+
+    // Drains the append-only analytics buffer and batch-inserts AnalyticsEvent rows — the
+    // producer the pipeline was missing (AnalyticsJob then aggregates these into UniqueViewers).
+    private async Task FlushAnalyticsEventsAsync()
+    {
+        var raw = await _cache.ListDrainAsync("analytics:pending", 1000);
+        if (raw.Count == 0) return;
+
+        var events = new List<Domain.Entities.AnalyticsEvent>(raw.Count);
+        foreach (var json in raw)
+        {
+            AnalyticsEventBuffer? e;
+            try { e = System.Text.Json.JsonSerializer.Deserialize<AnalyticsEventBuffer>(json); }
+            catch { continue; } // skip a malformed buffer entry rather than failing the batch
+            if (e is null) continue;
+
+            events.Add(new Domain.Entities.AnalyticsEvent
+            {
+                TenantId = e.TenantId,
+                UserId = e.ViewerId,
+                ContentId = e.ContentId,
+                EpisodeId = e.EpisodeId,
+                EventType = e.EventType,
+                WatchDurationSeconds = e.WatchDurationSeconds,
+                CreatedAt = e.CreatedAt
+            });
+        }
+
+        if (events.Count == 0) return;
+        _db.AnalyticsEvents.AddRange(events);
+        await _db.SaveChangesAsync();
+        _logger.LogInformation("Flushed {Count} analytics events", events.Count);
     }
 
     private async Task FlushViewCountsAsync()

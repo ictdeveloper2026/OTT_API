@@ -39,7 +39,8 @@
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.0" />
     <PackageReference Include="AspNetCore.HealthChecks.Redis" Version="8.0.0" />
 
-    <!-- Rate Limiting -->
+    <!-- Resilience (retry / timeout / circuit breaker on outbound HTTP) -->
+    <PackageReference Include="Polly" Version="8.3.0" />
 
     <!-- Serilog -->
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.0" />

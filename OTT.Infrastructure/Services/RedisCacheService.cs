@@ -21,6 +21,10 @@ public interface IRedisCacheService
     Task HashSetAsync(string key, string field, string value);
     Task<Dictionary<string, string>> HashGetAllAndClearAsync(string key);
 
+    // ── Append-only buffers (e.g. analytics events) drained in batches by a flush job ──
+    Task ListPushAsync(string key, string value);
+    Task<List<string>> ListDrainAsync(string key, int max);
+
     // ── Concurrent-stream slots (atomic, expiry-scored sorted set per user) ──
     /// <summary>
     /// Atomically prunes expired slots, then admits <paramref name="member"/> if the active slot
@@ -230,6 +234,29 @@ public class RedisCacheService : IRedisCacheService
     {
         try { await _db.SortedSetRemoveAsync(key, member); }
         catch (Exception ex) { _logger.LogError(ex, "Redis stream-slot release error for {Key}", key); }
+    }
+
+    public async Task ListPushAsync(string key, string value)
+    {
+        try { await _db.ListRightPushAsync(key, value); }
+        catch (Exception ex) { _logger.LogError(ex, "Redis RPUSH error for {Key}", key); }
+    }
+
+    // Atomically pops up to max items from the head (oldest first) so the flush job processes each once.
+    public async Task<List<string>> ListDrainAsync(string key, int max)
+    {
+        try
+        {
+            var values = await _db.ListLeftPopAsync(key, max);
+            return values is null
+                ? new()
+                : values.Where(v => v.HasValue).Select(v => v.ToString()).ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Redis LPOP error for {Key}", key);
+            return new();
+        }
     }
 
     // Reads the whole buffer hash and deletes it so the flush job processes each batch once.
