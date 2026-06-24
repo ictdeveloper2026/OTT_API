@@ -32,6 +32,7 @@ public class AuthService : IAuthService
     private readonly IJwtTokenService _jwt;
     private readonly IRedisCacheService _cache;
     private readonly INotificationService _notificationService;
+    private readonly ISmsService _sms;
     private readonly IConfiguration _config;
     private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<AuthService> _logger;
@@ -41,6 +42,7 @@ public class AuthService : IAuthService
         IJwtTokenService jwt,
         IRedisCacheService cache,
         INotificationService notificationService,
+        ISmsService sms,
         IConfiguration config,
         IHttpClientFactory httpFactory,
         ILogger<AuthService> logger)
@@ -49,6 +51,7 @@ public class AuthService : IAuthService
         _jwt = jwt;
         _cache = cache;
         _notificationService = notificationService;
+        _sms = sms;
         _config = config;
         _httpFactory = httpFactory;
         _logger = logger;
@@ -149,6 +152,14 @@ public class AuthService : IAuthService
 
         var name = user?.FirstName ?? "User";
         await _notificationService.SendOtpEmailAsync(email, name, otp);
+
+        // Also deliver the OTP by SMS when the user has a phone and Twilio is configured.
+        // Sent inline (not via the outbox) so the code arrives promptly; failures are non-fatal.
+        if (_sms.IsConfigured && !string.IsNullOrWhiteSpace(user?.Phone))
+        {
+            try { await _sms.SendAsync(user.Phone!, $"Your verification code is {otp}. It expires in 10 minutes."); }
+            catch (Exception ex) { _logger.LogWarning(ex, "OTP SMS delivery failed (email OTP still sent)"); }
+        }
         return true;
     }
 

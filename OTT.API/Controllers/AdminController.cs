@@ -109,6 +109,66 @@ public class AdminController : ControllerBase
         return Ok(ApiResponse<object>.Ok(new { total, page, pageSize, items }));
     }
 
+    // ── CSV Exports ──
+    // Tenant-scoped report downloads. Each returns a text/csv File with a dated filename.
+
+    [HttpGet("exports/revenue.csv")]
+    public async Task<IActionResult> ExportRevenue([FromQuery] string period = "30d")
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var days = period switch { "7d" => 7, "90d" => 90, "365d" => 365, _ => 30 };
+        var since = DateTime.UtcNow.Date.AddDays(-days);
+
+        var payments = await _db.Payments.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && p.Status == "success" && p.CreatedAt >= since)
+            .OrderByDescending(p => p.CreatedAt)
+            .Select(p => new { p.CreatedAt, p.GatewayPaymentId, p.UserId, p.Gateway, p.Amount, p.Currency, p.Description })
+            .ToListAsync();
+
+        var csv = OTT.API.Reporting.Csv.Build(
+            new[] { "Date", "PaymentId", "UserId", "Gateway", "Amount", "Currency", "Description" },
+            payments.Select(p => new object?[] { p.CreatedAt, p.GatewayPaymentId, p.UserId, p.Gateway, p.Amount, p.Currency, p.Description }));
+
+        return File(csv, "text/csv", $"revenue_{DateTime.UtcNow:yyyyMMdd}.csv");
+    }
+
+    [HttpGet("exports/users.csv")]
+    public async Task<IActionResult> ExportUsers()
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var users = await _db.Users.AsNoTracking()
+            .Where(u => u.TenantId == tenantId && !u.IsDeleted)
+            .OrderByDescending(u => u.CreatedAt)
+            .Select(u => new { u.Id, u.Email, u.FirstName, u.LastName, u.Phone, u.Role, u.IsEmailVerified, u.IsBlocked, u.CreatedAt })
+            .ToListAsync();
+
+        var csv = OTT.API.Reporting.Csv.Build(
+            new[] { "Id", "Email", "FirstName", "LastName", "Phone", "Role", "EmailVerified", "Blocked", "CreatedAt" },
+            users.Select(u => new object?[] { u.Id, u.Email, u.FirstName, u.LastName, u.Phone, u.Role, u.IsEmailVerified, u.IsBlocked, u.CreatedAt }));
+
+        return File(csv, "text/csv", $"users_{DateTime.UtcNow:yyyyMMdd}.csv");
+    }
+
+    [HttpGet("exports/content-analytics.csv")]
+    public async Task<IActionResult> ExportContentAnalytics([FromQuery] string period = "30d")
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var days = period switch { "7d" => 7, "90d" => 90, "365d" => 365, _ => 30 };
+        var since = DateTime.UtcNow.Date.AddDays(-days);
+
+        var rows = await _db.ContentAnalytics.AsNoTracking()
+            .Where(a => a.Date >= since && a.Content!.TenantId == tenantId)
+            .OrderByDescending(a => a.Date)
+            .Select(a => new { a.Date, a.ContentId, Title = a.Content!.Title, a.Views, a.UniqueViewers, a.TotalWatchSeconds })
+            .ToListAsync();
+
+        var csv = OTT.API.Reporting.Csv.Build(
+            new[] { "Date", "ContentId", "Title", "Views", "UniqueViewers", "TotalWatchSeconds" },
+            rows.Select(r => new object?[] { r.Date, r.ContentId, r.Title, r.Views, r.UniqueViewers, r.TotalWatchSeconds }));
+
+        return File(csv, "text/csv", $"content-analytics_{DateTime.UtcNow:yyyyMMdd}.csv");
+    }
+
     // ── Content ──
     [HttpGet("contents")]
     public async Task<IActionResult> GetContents([FromQuery] int page = 1, [FromQuery] int pageSize = 20,

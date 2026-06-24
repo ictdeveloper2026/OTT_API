@@ -227,6 +227,7 @@ builder.Services.AddScoped<IVideoService, VideoService>();
 builder.Services.AddScoped<ILiveStreamService, LiveStreamService>();
 builder.Services.AddScoped<IOutboxService, OutboxService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
+builder.Services.AddScoped<ISmsService, TwilioSmsService>();
 builder.Services.AddScoped<IS3StorageService, S3StorageService>();
 builder.Services.AddScoped<ICloudFrontCdnService, CloudFrontCdnService>();
 // Admin-configurable, hot-reloadable storage (DB-backed, falls back to appsettings)
