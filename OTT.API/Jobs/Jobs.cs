@@ -175,12 +175,119 @@ public class CleanupJob
     }
 }
 
+// ── Write-Behind Flush Job ─────────────────────────────────────────────────────
+// Drains the Redis buffers populated by the hot read/write paths (view counts and
+// watch progress) and persists them to SQL in batches. Keeps ~thousands of writes/sec
+// off the database.
+
+public class WriteBehindFlushJob
+{
+    private readonly OttDbContext _db;
+    private readonly IRedisCacheService _cache;
+    private readonly ILogger<WriteBehindFlushJob> _logger;
+
+    public WriteBehindFlushJob(OttDbContext db, IRedisCacheService cache, ILogger<WriteBehindFlushJob> logger)
+    {
+        _db = db;
+        _cache = cache;
+        _logger = logger;
+    }
+
+    [DisableConcurrentExecution(timeoutInSeconds: 120)]
+    public async Task FlushAsync()
+    {
+        await FlushViewCountsAsync();
+        await FlushWatchProgressAsync();
+    }
+
+    private async Task FlushViewCountsAsync()
+    {
+        var views = await _cache.HashGetAllAndClearAsync("views:pending");
+        if (views.Count == 0) return;
+
+        var today = DateTime.UtcNow.Date;
+        foreach (var (idStr, countStr) in views)
+        {
+            if (!Guid.TryParse(idStr, out var id) || !long.TryParse(countStr, out var n) || n <= 0) continue;
+
+            await _db.Contents.IgnoreQueryFilters()
+                .Where(c => c.Id == id)
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.ViewCount, c => c.ViewCount + (int)n));
+
+            // Populate daily analytics — the producer the dashboards were missing.
+            var ca = await _db.ContentAnalytics.FirstOrDefaultAsync(a => a.ContentId == id && a.Date == today);
+            if (ca == null)
+                _db.ContentAnalytics.Add(new Domain.Entities.ContentAnalytics { ContentId = id, Date = today, Views = (int)n });
+            else
+                ca.Views += (int)n;
+        }
+        await _db.SaveChangesAsync();
+        _logger.LogInformation("Flushed view counts for {Count} titles", views.Count);
+    }
+
+    private async Task FlushWatchProgressAsync()
+    {
+        var entries = await _cache.HashGetAllAndClearAsync("wh:pending");
+        if (entries.Count == 0) return;
+
+        var parsed = new List<(Guid ProfileId, Guid ContentId, Guid? EpisodeId, int Position, int Duration)>();
+        foreach (var (field, value) in entries)
+        {
+            var fk = field.Split('|');
+            var vv = value.Split(':');
+            if (fk.Length < 3 || vv.Length < 2) continue;
+            if (!Guid.TryParse(fk[0], out var pid) || !Guid.TryParse(fk[1], out var cid)) continue;
+            Guid? eid = Guid.TryParse(fk[2], out var ep) ? ep : null;
+            if (!int.TryParse(vv[0], out var pos)) continue;
+            int.TryParse(vv[1], out var dur);
+            parsed.Add((pid, cid, eid, pos, dur));
+        }
+        if (parsed.Count == 0) return;
+
+        var profileIds = parsed.Select(p => p.ProfileId).Distinct().ToList();
+        var contentIds = parsed.Select(p => p.ContentId).Distinct().ToList();
+        var existing = await _db.WatchHistories
+            .Where(w => profileIds.Contains(w.ProfileId) && contentIds.Contains(w.ContentId))
+            .ToListAsync();
+
+        foreach (var p in parsed)
+        {
+            var h = existing.FirstOrDefault(w =>
+                w.ProfileId == p.ProfileId && w.ContentId == p.ContentId && w.EpisodeId == p.EpisodeId);
+            if (h == null)
+            {
+                h = new Domain.Entities.WatchHistory
+                {
+                    ProfileId = p.ProfileId,
+                    ContentId = p.ContentId,
+                    EpisodeId = p.EpisodeId
+                };
+                _db.WatchHistories.Add(h);
+                existing.Add(h);
+            }
+            h.PositionSeconds = p.Position;
+            h.LastWatchedAt = DateTime.UtcNow;
+            if (p.Duration > 0)
+                h.IsCompleted = p.Position >= p.Duration * 0.9;
+        }
+
+        await _db.SaveChangesAsync();
+        _logger.LogInformation("Flushed watch progress for {Count} entries", parsed.Count);
+    }
+}
+
 // ── Hangfire Scheduler ────────────────────────────────────────────────────────
 
 public static class HangfireScheduler
 {
     public static void ConfigureRecurringJobs()
     {
+        // Write-behind flush (view counts + watch progress) - every minute
+        RecurringJob.AddOrUpdate<WriteBehindFlushJob>(
+            "write-behind-flush",
+            job => job.FlushAsync(),
+            "* * * * *");
+
         // Subscription renewals - every hour
         RecurringJob.AddOrUpdate<SubscriptionRenewalJob>(
             "subscription-renewal",

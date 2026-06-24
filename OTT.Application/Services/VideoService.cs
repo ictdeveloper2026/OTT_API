@@ -27,6 +27,7 @@ public class VideoService : IVideoService
     private readonly IS3StorageService _s3;
     private readonly ICloudFrontCdnService _cdn;
     private readonly IConfiguration _config;
+    private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<VideoService> _logger;
 
     private static readonly string[] Qualities = ["1080p", "720p", "480p", "360p"];
@@ -43,12 +44,14 @@ public class VideoService : IVideoService
         IS3StorageService s3,
         ICloudFrontCdnService cdn,
         IConfiguration config,
+        IHttpClientFactory httpFactory,
         ILogger<VideoService> logger)
     {
         _db = db;
         _s3 = s3;
         _cdn = cdn;
         _config = config;
+        _httpFactory = httpFactory;
         _logger = logger;
     }
 
@@ -257,7 +260,7 @@ public class VideoService : IVideoService
         // Validate with YouTube oEmbed
         try
         {
-            using var client = new HttpClient();
+            var client = _httpFactory.CreateClient();
             var response = await client.GetAsync($"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={id}&format=json");
             if (response.IsSuccessStatusCode) return id;
         }
@@ -279,7 +282,7 @@ public class VideoService : IVideoService
 
         try
         {
-            using var client = new HttpClient();
+            var client = _httpFactory.CreateClient();
             var response = await client.GetAsync($"https://vimeo.com/api/oembed.json?url=https://vimeo.com/{id}");
             if (response.IsSuccessStatusCode) return id;
         }

@@ -33,6 +33,7 @@ public class SubscriptionService : ISubscriptionService
     private readonly INotificationService _notifications;
     private readonly IConfiguration _config;
     private readonly IDynamicSettingsService _settings;
+    private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<SubscriptionService> _logger;
 
     public SubscriptionService(
@@ -41,6 +42,7 @@ public class SubscriptionService : ISubscriptionService
         INotificationService notifications,
         IConfiguration config,
         IDynamicSettingsService settings,
+        IHttpClientFactory httpFactory,
         ILogger<SubscriptionService> logger)
     {
         _db = db;
@@ -48,6 +50,7 @@ public class SubscriptionService : ISubscriptionService
         _notifications = notifications;
         _config = config;
         _settings = settings;
+        _httpFactory = httpFactory;
         _logger = logger;
     }
 
@@ -75,17 +78,21 @@ public class SubscriptionService : ISubscriptionService
         decimal amount = plan.Price;
         string currency = plan.Currency;
 
-        // Apply promo code
+        // Apply promo code (remember which one so usage is counted on payment success)
+        string? appliedPromo = null;
         if (!string.IsNullOrEmpty(dto.PromoCode))
         {
             var (promoSuccess, discount) = await ApplyPromoCodeAsync(dto.PromoCode, tenantId, dto.PlanId);
             if (promoSuccess)
+            {
                 amount = Math.Max(0, amount - discount);
+                appliedPromo = dto.PromoCode;
+            }
         }
 
         return dto.Gateway switch
         {
-            "razorpay" => await CreateRazorpayOrderAsync(plan, amount, currency, userId, tenantId),
+            "razorpay" => await CreateRazorpayOrderAsync(plan, amount, currency, userId, tenantId, appliedPromo),
             "stripe" => await CreateStripeOrderAsync(plan, amount, currency, userId, tenantId),
             _ => throw new InvalidOperationException($"Unsupported gateway: {dto.Gateway}")
         };
@@ -236,7 +243,7 @@ public class SubscriptionService : ISubscriptionService
 
     // ── Private Helpers ───────────────────────────────────────────────────────
 
-    private async Task<OrderResponseDto> CreateRazorpayOrderAsync(SubscriptionPlan plan, decimal amount, string currency, Guid userId, Guid tenantId)
+    private async Task<OrderResponseDto> CreateRazorpayOrderAsync(SubscriptionPlan plan, decimal amount, string currency, Guid userId, Guid tenantId, string? promoCode = null)
     {
         var keyId = await _settings.GetAsync(tenantId, SettingKeys.RazorpayKeyId, _config["Razorpay:KeyId"])
             ?? throw new InvalidOperationException("Razorpay KeyId not configured");
@@ -260,7 +267,8 @@ public class SubscriptionService : ISubscriptionService
             planId = plan.Id,
             userId,
             amount,
-            currency
+            currency,
+            promoCode
         }), TimeSpan.FromHours(1));
 
         return new OrderResponseDto
@@ -279,7 +287,7 @@ public class SubscriptionService : ISubscriptionService
         var stripeKey = await _settings.GetAsync(tenantId, SettingKeys.StripeSecretKey, _config["Stripe:SecretKey"])
             ?? throw new InvalidOperationException("Stripe key not configured");
 
-        using var client = new HttpClient();
+        var client = _httpFactory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", stripeKey);
 
@@ -310,10 +318,24 @@ public class SubscriptionService : ISubscriptionService
         var keySecret = await _settings.GetAsync(tenantId, SettingKeys.RazorpayKeySecret, _config["Razorpay:KeySecret"])
             ?? throw new InvalidOperationException("Razorpay secret not configured");
 
-        // Verify signature
+        // Verify signature (constant-time, to avoid timing side-channels).
         var expectedSignature = ComputeHmacSha256($"{dto.OrderId}|{dto.PaymentId}", keySecret);
-        if (expectedSignature != dto.Signature)
+        if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(expectedSignature),
+                Encoding.UTF8.GetBytes(dto.Signature ?? string.Empty)))
             throw new UnauthorizedAccessException("Invalid payment signature");
+
+        // Idempotency: a gateway payment id is honoured at most once (prevents double-grant on retries).
+        var alreadyProcessed = await _db.Payments
+            .AnyAsync(p => p.GatewayPaymentId == dto.PaymentId && p.Status == "success");
+        if (alreadyProcessed)
+        {
+            var existing = await _db.UserSubscriptions.Include(s => s.Plan)
+                .Where(s => s.UserId == userId && s.GatewayPaymentId == dto.PaymentId)
+                .OrderByDescending(s => s.CreatedAt)
+                .FirstOrDefaultAsync();
+            if (existing != null) return MapSubscriptionDto(existing);
+        }
 
         // Retrieve cached order data
         var orderJson = await _cache.GetStringAsync($"rzp_order:{dto.OrderId}");
@@ -326,33 +348,58 @@ public class SubscriptionService : ISubscriptionService
         var plan = await _db.SubscriptionPlans.FindAsync(planId)
             ?? throw new KeyNotFoundException("Plan not found");
 
-        // Record payment
-        var payment = new Payment
+        // Payment record + subscription grant must commit atomically. CreateExecutionStrategy
+        // is required because the DbContext is configured with EnableRetryOnFailure.
+        var strategy = _db.Database.CreateExecutionStrategy();
+        var sub = await strategy.ExecuteAsync(async () =>
         {
-            UserId = userId,
-            TenantId = tenantId,
-            Gateway = "razorpay",
-            GatewayOrderId = dto.OrderId,
-            GatewayPaymentId = dto.PaymentId,
-            Amount = amount,
-            Currency = plan.Currency,
-            Status = "success",
-            Description = $"Subscription: {plan.Name}",
-            CreatedAt = DateTime.UtcNow
-        };
-        _db.Payments.Add(payment);
+            await using var tx = await _db.Database.BeginTransactionAsync();
 
-        var sub = await GrantSubscriptionAsync(userId, plan, "razorpay", dto.PaymentId);
-        sub.GatewayPaymentId = dto.PaymentId;
-        sub.RazorpayOrderId = dto.OrderId;
+            _db.Payments.Add(new Payment
+            {
+                UserId = userId,
+                TenantId = tenantId,
+                Gateway = "razorpay",
+                GatewayOrderId = dto.OrderId,
+                GatewayPaymentId = dto.PaymentId,
+                Amount = amount,
+                Currency = plan.Currency,
+                Status = "success",
+                Description = $"Subscription: {plan.Name}",
+                CreatedAt = DateTime.UtcNow
+            });
+
+            var granted = await GrantSubscriptionAsync(userId, plan, "razorpay", dto.PaymentId);
+            granted.GatewayPaymentId = dto.PaymentId;
+            granted.RazorpayOrderId = dto.OrderId;
+            granted.Plan = plan;
+
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+            return granted;
+        });
 
         await _cache.RemoveAsync($"rzp_order:{dto.OrderId}");
-        await _db.SaveChangesAsync();
 
-        // Send confirmation
-        var user = await _db.Users.FindAsync(userId);
-        if (user != null)
-            await _notifications.SendSubscriptionConfirmationAsync(user.Email, user.FirstName ?? "User", plan.Name, sub.EndDate);
+        // Count promo usage now that the payment succeeded (was never incremented → unlimited reuse).
+        var promoCode = orderData.TryGetProperty("promoCode", out var pc) && pc.ValueKind == JsonValueKind.String
+            ? pc.GetString() : null;
+        if (!string.IsNullOrEmpty(promoCode))
+            await _db.PromoCodes
+                .Where(p => p.Code == promoCode && p.TenantId == tenantId)
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.UsedCount, p => p.UsedCount + 1));
+
+        // Confirmation email is a side effect — must never fail the (already-committed) payment.
+        try
+        {
+            var user = await _db.Users.FindAsync(userId);
+            if (user != null)
+                await _notifications.SendSubscriptionConfirmationAsync(user.Email, user.FirstName ?? "User", plan.Name, sub.EndDate);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Subscription confirmation email failed for user {UserId} (payment already recorded)", userId);
+        }
 
         return MapSubscriptionDto(sub);
     }
@@ -429,43 +476,71 @@ public class SubscriptionService : ISubscriptionService
     private async Task<bool> VerifyAppleReceiptAsync(string receipt)
     {
         var appleSecret = _config["Apple:IAPSharedSecret"] ?? "";
-        using var client = new HttpClient();
 
-        var body = JsonSerializer.Serialize(new Dictionary<string, string>
+        async Task<JsonElement> VerifyAt(string url)
         {
-            ["receipt-data"] = receipt,
-            ["password"] = appleSecret
-        });
-        var content = new StringContent(body, Encoding.UTF8, "application/json");
+            var client = _httpFactory.CreateClient();
+            var body = JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["receipt-data"] = receipt,
+                ["password"] = appleSecret
+            });
+            var resp = await client.PostAsync(url, new StringContent(body, Encoding.UTF8, "application/json"));
+            return JsonSerializer.Deserialize<JsonElement>(await resp.Content.ReadAsStringAsync());
+        }
 
-        // Try sandbox first, then production
-        var response = await client.PostAsync("https://sandbox.itunes.apple.com/verifyReceipt", content);
-        var json = JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+        // Production first; only fall back to sandbox when Apple says it's a sandbox receipt (21007).
+        // (Previously it hit sandbox only and granted a real subscription on any 21007 — a full bypass.)
+        var json = await VerifyAt("https://buy.itunes.apple.com/verifyReceipt");
+        if (json.TryGetProperty("status", out var first) && first.GetInt32() == 21007)
+            json = await VerifyAt("https://sandbox.itunes.apple.com/verifyReceipt");
 
-        var status = json.GetProperty("status").GetInt32();
-        if (status == 21007) // Sandbox receipt sent to production
-            return true; // Sandbox is valid for testing
+        if (!json.TryGetProperty("status", out var status) || status.GetInt32() != 0)
+            return false;
 
-        return status == 0;
+        // The receipt must belong to THIS app.
+        var expectedBundle = _config["Apple:BundleId"];
+        if (!string.IsNullOrEmpty(expectedBundle)
+            && json.TryGetProperty("receipt", out var r)
+            && r.TryGetProperty("bundle_id", out var b)
+            && b.GetString() != expectedBundle)
+            return false;
+
+        return true;
     }
 
     private async Task<bool> VerifyGooglePlayReceiptAsync(string receipt)
     {
-        // Google Play receipt verification via Google API
         // receipt format: {packageName}:{subscriptionId}:{purchaseToken}
         var parts = receipt.Split(':');
         if (parts.Length < 3) return false;
+        var (packageName, subscriptionId, purchaseToken) = (parts[0], parts[1], parts[2]);
 
-        var packageName = parts[0];
-        var subscriptionId = parts[1];
-        var purchaseToken = parts[2];
+        // The Play Developer API requires an OAuth2 access token from a SERVICE ACCOUNT — an API
+        // key is NOT accepted for purchases.subscriptions.get. Until that's configured we FAIL
+        // CLOSED instead of granting on a 200 from an unauthorized call (the previous behaviour).
+        var accessToken = _config["Google:Play:AccessToken"];
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            _logger.LogWarning("Google Play verification not configured (no service-account access token); denying receipt.");
+            return false;
+        }
 
-        using var client = new HttpClient();
-        var apiKey = _config["Google:PlayApiKey"] ?? "";
-        var url = $"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{packageName}/purchases/subscriptions/{subscriptionId}/tokens/{purchaseToken}?key={apiKey}";
+        var client = _httpFactory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+        var url = $"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{packageName}/purchases/subscriptions/{subscriptionId}/tokens/{purchaseToken}";
 
         var response = await client.GetAsync(url);
-        return response.IsSuccessStatusCode;
+        if (!response.IsSuccessStatusCode) return false;
+
+        var json = JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+        // Require an actually-paid, non-expired subscription.
+        var paid = json.TryGetProperty("paymentState", out var ps) && ps.GetInt32() == 1;
+        var notExpired = json.TryGetProperty("expiryTimeMillis", out var exp)
+            && long.TryParse(exp.GetString(), out var ms)
+            && DateTimeOffset.FromUnixTimeMilliseconds(ms) > DateTimeOffset.UtcNow;
+        return paid && notExpired;
     }
 
     private static string ComputeHmacSha256(string data, string secret)

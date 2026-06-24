@@ -14,7 +14,7 @@ public interface IContentService
     Task<PagedResultDto<ContentListItemDto>> SearchAsync(SearchRequestDto request, Guid tenantId);
     Task<PagedResultDto<ContentListItemDto>> GetByGenreAsync(Guid genreId, Guid tenantId, int page, int pageSize);
     Task<StreamUrlsDto> GetStreamUrlsAsync(Guid contentId, Guid tenantId, Guid? episodeId = null);
-    Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, Guid? episodeId = null);
+    Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, int durationSeconds, Guid? episodeId = null);
     Task<bool> AddToWatchlistAsync(Guid profileId, Guid contentId);
     Task<bool> RemoveFromWatchlistAsync(Guid profileId, Guid contentId);
     Task<bool> RateContentAsync(Guid profileId, Guid contentId, decimal rating);
@@ -29,9 +29,9 @@ public interface IContentService
     Task<List<ContentListItemDto>> GetWatchHistoryAsync(Guid profileId);
     // Admin
     Task<ContentDetailDto> CreateContentAsync(CreateContentDto dto, Guid tenantId);
-    Task<ContentDetailDto> UpdateContentAsync(Guid contentId, CreateContentDto dto);
-    Task<bool> DeleteContentAsync(Guid contentId);
-    Task<bool> PublishContentAsync(Guid contentId);
+    Task<ContentDetailDto> UpdateContentAsync(Guid contentId, Guid tenantId, CreateContentDto dto);
+    Task<bool> DeleteContentAsync(Guid contentId, Guid tenantId);
+    Task<bool> PublishContentAsync(Guid contentId, Guid tenantId);
     Task<PagedResultDto<ContentListItemDto>> GetAdminContentAsync(Guid tenantId, int page, int pageSize, string? search = null, string? type = null);
 }
 
@@ -63,6 +63,7 @@ public class ContentService : IContentService
             .ToListAsync();
 
         var rows = await _db.ContentRows
+            .AsNoTracking()
             .Include(r => r.Items)
             .Where(r => r.TenantId == tenantId && r.IsActive)
             .OrderBy(r => r.SortOrder)
@@ -78,6 +79,7 @@ public class ContentService : IContentService
             .Distinct().ToList();
 
         var contents = await _db.Contents
+            .AsNoTracking()
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => contentIds.Contains(c.Id) && c.Status == "published")
             .ToDictionaryAsync(c => c.Id);
@@ -86,6 +88,7 @@ public class ContentService : IContentService
         if (profileId.HasValue)
         {
             var history = await _db.WatchHistories
+                .AsNoTracking()
                 .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
                 .Where(w => w.ProfileId == profileId && !w.IsCompleted && w.PositionSeconds > 30)
                 .OrderByDescending(w => w.LastWatchedAt)
@@ -109,11 +112,15 @@ public class ContentService : IContentService
 
     public async Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null)
     {
+        // AsSplitQuery: four collection includes in one query would otherwise produce a
+        // cartesian row explosion (seasons×episodes×genres×casts×tags).
         var content = await _db.Contents
+            .AsNoTracking()
             .Include(c => c.Seasons).ThenInclude(s => s.Episodes)
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Include(c => c.ContentCasts)
             .Include(c => c.ContentTags).ThenInclude(ct => ct.Tag)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId && c.Status == "published")
             ?? throw new KeyNotFoundException("Content not found");
 
@@ -191,9 +198,9 @@ public class ContentService : IContentService
             .Select(c => MapContentListItem(c))
             .ToListAsync();
 
-        // Increment view count
-        content.ViewCount++;
-        await _db.SaveChangesAsync();
+        // Increment view count via a write-behind buffer — no SQL write on this hot read path.
+        // A recurring job (WriteBehindFlushJob) folds these into Contents.ViewCount.
+        await _cache.HashIncrementAsync("views:pending", contentId.ToString());
 
         return dto;
     }
@@ -201,6 +208,7 @@ public class ContentService : IContentService
     public async Task<PagedResultDto<ContentListItemDto>> SearchAsync(SearchRequestDto request, Guid tenantId)
     {
         var query = _db.Contents
+            .AsNoTracking()
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => c.TenantId == tenantId && c.Status == "published");
 
@@ -256,6 +264,7 @@ public class ContentService : IContentService
     public async Task<PagedResultDto<ContentListItemDto>> GetByGenreAsync(Guid genreId, Guid tenantId, int page, int pageSize)
     {
         var query = _db.Contents
+            .AsNoTracking()
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => c.TenantId == tenantId && c.Status == "published"
                 && c.ContentGenres.Any(cg => cg.GenreId == genreId));
@@ -275,6 +284,7 @@ public class ContentService : IContentService
     public async Task<List<ContentListItemDto>> GetFeaturedAsync(Guid tenantId)
     {
         var items = await _db.Contents
+            .AsNoTracking()
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => c.TenantId == tenantId && c.Status == "published" && c.IsFeatured)
             .OrderByDescending(c => c.CreatedAt)
@@ -286,6 +296,7 @@ public class ContentService : IContentService
     public async Task<PagedResultDto<ContentListItemDto>> GetTrendingAsync(Guid tenantId, int page, int pageSize)
     {
         var query = _db.Contents
+            .AsNoTracking()
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => c.TenantId == tenantId && c.Status == "published");
 
@@ -305,6 +316,7 @@ public class ContentService : IContentService
     public async Task<PagedResultDto<ContentListItemDto>> GetNewReleasesAsync(Guid tenantId, int page, int pageSize)
     {
         var query = _db.Contents
+            .AsNoTracking()
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => c.TenantId == tenantId && c.Status == "published");
 
@@ -329,6 +341,7 @@ public class ContentService : IContentService
             .ToListAsync();
 
         var items = await _db.Contents
+            .AsNoTracking()
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => c.TenantId == tenantId && c.Status == "published" && c.Id != contentId
                 && c.ContentGenres.Any(cg => genreIds.Contains(cg.GenreId)))
@@ -350,6 +363,7 @@ public class ContentService : IContentService
     public async Task<List<ContentListItemDto>> GetWatchHistoryAsync(Guid profileId)
     {
         var contents = await _db.WatchHistories
+            .AsNoTracking()
             .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(w => w.ProfileId == profileId)
             .OrderByDescending(w => w.LastWatchedAt)
@@ -360,9 +374,15 @@ public class ContentService : IContentService
 
     public async Task<StreamUrlsDto> GetStreamUrlsAsync(Guid contentId, Guid tenantId, Guid? episodeId = null)
     {
+        // Tenant-scoped: never resolve content/episodes belonging to another tenant.
+        var content = await _db.Contents
+            .FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId)
+            ?? throw new KeyNotFoundException("Content not found");
+
         if (episodeId.HasValue)
         {
-            var episode = await _db.Episodes.FindAsync(episodeId)
+            var episode = await _db.Episodes
+                .FirstOrDefaultAsync(e => e.Id == episodeId && e.ContentId == contentId)
                 ?? throw new KeyNotFoundException("Episode not found");
 
             var asset = await _db.VideoAssets
@@ -371,46 +391,18 @@ public class ContentService : IContentService
             return BuildStreamUrls(asset, episode.ExternalVideoUrl, episode.YoutubeId, episode.VimeoId);
         }
 
-        var content = await _db.Contents.FindAsync(contentId)
-            ?? throw new KeyNotFoundException("Content not found");
-
         return await GetStreamUrlsInternalAsync(content);
     }
 
-    public async Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, Guid? episodeId = null)
+    public async Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, int durationSeconds, Guid? episodeId = null)
     {
-        var history = await _db.WatchHistories
-            .FirstOrDefaultAsync(w => w.ProfileId == profileId && w.ContentId == contentId && w.EpisodeId == episodeId);
-
-        if (history == null)
-        {
-            history = new WatchHistory
-            {
-                ProfileId = profileId,
-                ContentId = contentId,
-                EpisodeId = episodeId,
-                PositionSeconds = positionSeconds,
-                LastWatchedAt = DateTime.UtcNow
-            };
-            _db.WatchHistories.Add(history);
-        }
-        else
-        {
-            history.PositionSeconds = positionSeconds;
-            history.LastWatchedAt = DateTime.UtcNow;
-        }
-
-        // Get duration for completion check
-        int? duration = null;
-        if (episodeId.HasValue)
-            duration = (await _db.Episodes.FindAsync(episodeId))?.DurationSeconds;
-        else
-            duration = (await _db.Contents.FindAsync(contentId))?.DurationSeconds;
-
-        if (duration.HasValue && duration > 0)
-            history.IsCompleted = positionSeconds >= duration.Value * 0.9;
-
-        await _db.SaveChangesAsync();
+        // Write-behind: at ~3k writes/sec under load this must NOT hit SQL on every call.
+        // Buffer the latest position per (profile, content, episode) in Redis; WriteBehindFlushJob
+        // persists it to WatchHistories every minute. Duration comes from the client payload, so
+        // there is no DB read on this path either.
+        var field = $"{profileId}|{contentId}|{episodeId?.ToString() ?? "none"}";
+        var value = $"{positionSeconds}:{durationSeconds}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        await _cache.HashSetAsync("wh:pending", field, value);
     }
 
     public async Task<bool> AddToWatchlistAsync(Guid profileId, Guid contentId)
@@ -453,6 +445,7 @@ public class ContentService : IContentService
     public async Task<List<ContentListItemDto>> GetContinueWatchingAsync(Guid profileId)
     {
         return await _db.WatchHistories
+            .AsNoTracking()
             .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(w => w.ProfileId == profileId && !w.IsCompleted && w.PositionSeconds > 30)
             .OrderByDescending(w => w.LastWatchedAt)
@@ -464,6 +457,7 @@ public class ContentService : IContentService
     public async Task<List<ContentListItemDto>> GetWatchlistAsync(Guid profileId, Guid tenantId)
     {
         return await _db.Watchlists
+            .AsNoTracking()
             .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(w => w.ProfileId == profileId && w.Content.TenantId == tenantId)
             .OrderByDescending(w => w.AddedAt)
@@ -557,9 +551,9 @@ public class ContentService : IContentService
         return await GetContentDetailAsync(content.Id, tenantId);
     }
 
-    public async Task<ContentDetailDto> UpdateContentAsync(Guid contentId, CreateContentDto dto)
+    public async Task<ContentDetailDto> UpdateContentAsync(Guid contentId, Guid tenantId, CreateContentDto dto)
     {
-        var content = await _db.Contents.FindAsync(contentId)
+        var content = await _db.Contents.FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId)
             ?? throw new KeyNotFoundException("Content not found");
 
         content.Title = dto.Title;
@@ -591,18 +585,18 @@ public class ContentService : IContentService
         return await GetContentDetailAsync(contentId, content.TenantId);
     }
 
-    public async Task<bool> DeleteContentAsync(Guid contentId)
+    public async Task<bool> DeleteContentAsync(Guid contentId, Guid tenantId)
     {
-        var content = await _db.Contents.FindAsync(contentId);
+        var content = await _db.Contents.FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId);
         if (content == null) return false;
         content.IsDeleted = true;
         await _db.SaveChangesAsync();
         return true;
     }
 
-    public async Task<bool> PublishContentAsync(Guid contentId)
+    public async Task<bool> PublishContentAsync(Guid contentId, Guid tenantId)
     {
-        var content = await _db.Contents.FindAsync(contentId);
+        var content = await _db.Contents.FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId);
         if (content == null) return false;
         content.Status = "published";
         content.PublishedAt = DateTime.UtcNow;

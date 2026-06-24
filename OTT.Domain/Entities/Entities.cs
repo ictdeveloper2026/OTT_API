@@ -413,6 +413,8 @@ namespace OTT.Domain.Entities
         public Guid Id { get; set; } = Guid.NewGuid();
         public Guid UserId { get; set; }
         public Guid TenantId { get; set; }
+        // Set for per-title (TVOD/PPV) purchases; null for subscription payments.
+        public Guid? ContentId { get; set; }
         public string Gateway { get; set; } = "";
         public string? GatewayOrderId { get; set; }
         public string? GatewayPaymentId { get; set; }
@@ -626,5 +628,20 @@ namespace OTT.Domain.Entities
         public string? LocalRootPath { get; set; }       // root folder for the "local" provider
         public bool IsActive { get; set; } = true;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    }
+
+    // ── Audit Log (admin/privileged action trail — compliance) ─────────────────
+    public class AuditLog
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public Guid TenantId { get; set; }
+        public Guid? ActorUserId { get; set; }          // null for unauthenticated/system actions
+        public string? ActorEmail { get; set; }
+        public string Action { get; set; } = string.Empty;   // HTTP method (POST/PUT/PATCH/DELETE)
+        public string Path { get; set; } = string.Empty;     // request path acted upon
+        public int StatusCode { get; set; }
+        public string? IpAddress { get; set; }
+        public string? UserAgent { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 }

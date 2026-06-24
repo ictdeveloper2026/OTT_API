@@ -46,6 +46,7 @@ public class OttDbContext : DbContext
     public DbSet<ParentalControl> ParentalControls => Set<ParentalControl>();
     public DbSet<StorageConfiguration> StorageConfigurations => Set<StorageConfiguration>();
     public DbSet<IptvChannel> IptvChannels => Set<IptvChannel>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -108,6 +109,9 @@ public class OttDbContext : DbContext
         {
             e.HasKey(x => x.Id);
             e.HasOne(x => x.Tenant).WithMany(t => t.Contents).HasForeignKey(x => x.TenantId);
+            // Hot read paths filter by tenant+status and sort by trending/views.
+            e.HasIndex(x => new { x.TenantId, x.Status });
+            e.HasIndex(x => new { x.TenantId, x.IsTrending, x.ViewCount });
             e.Property(x => x.Title).HasMaxLength(500).IsRequired();
             e.Property(x => x.Type).HasMaxLength(50).IsRequired();
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("draft");
@@ -228,6 +232,8 @@ public class OttDbContext : DbContext
             e.HasKey(x => x.Id);
             e.HasOne(x => x.User).WithMany(u => u.Subscriptions).HasForeignKey(x => x.UserId);
             e.HasOne(x => x.Plan).WithMany().HasForeignKey(x => x.PlanId);
+            // Active-subscription lookups (entitlement checks, renewals).
+            e.HasIndex(x => new { x.UserId, x.Status, x.EndDate });
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("active");
             e.Property(x => x.PaymentGateway).HasMaxLength(50);
         });
@@ -237,6 +243,9 @@ public class OttDbContext : DbContext
         {
             e.HasKey(x => x.Id);
             e.HasOne(x => x.User).WithMany(u => u.Payments).HasForeignKey(x => x.UserId);
+            // Revenue dashboards + idempotency lookups by gateway payment id.
+            e.HasIndex(x => new { x.TenantId, x.Status, x.CreatedAt });
+            e.HasIndex(x => x.GatewayPaymentId);
             e.Property(x => x.Gateway).HasMaxLength(50).IsRequired();
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("pending");
             e.Property(x => x.Amount).HasPrecision(10, 2);
@@ -260,6 +269,8 @@ public class OttDbContext : DbContext
             e.HasKey(x => x.Id);
             e.HasOne(x => x.UserProfile).WithMany().HasForeignKey(x => x.ProfileId);
             e.HasIndex(x => new { x.ProfileId, x.ContentId });
+            // Continue-watching orders by most-recently-watched.
+            e.HasIndex(x => new { x.ProfileId, x.LastWatchedAt });
         });
 
         // Watchlist
@@ -341,6 +352,20 @@ public class OttDbContext : DbContext
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.ProfileId).IsUnique();
             e.Property(x => x.MaxRating).HasMaxLength(20).HasDefaultValue("PG");
+        });
+
+        // AuditLog
+        modelBuilder.Entity<AuditLog>(e =>
+        {
+            e.HasKey(x => x.Id);
+            // Newest-first queries scoped per tenant (the admin audit screen).
+            e.HasIndex(x => new { x.TenantId, x.CreatedAt });
+            e.Property(x => x.Action).HasMaxLength(10).IsRequired();
+            e.Property(x => x.Path).HasMaxLength(512).IsRequired();
+            e.Property(x => x.ActorEmail).HasMaxLength(256);
+            e.Property(x => x.IpAddress).HasMaxLength(64);
+            e.Property(x => x.UserAgent).HasMaxLength(512);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // Soft delete filter

@@ -79,7 +79,28 @@ public class TenantMiddleware
     {
         Guid? tenantId = null;
 
-        // 1. From X-Tenant-ID header
+        // 0. Authenticated requests: the tenant baked into the JWT is authoritative.
+        //    This prevents X-Tenant-ID spoofing (a logged-in user operating inside
+        //    another tenant by sending an arbitrary header).
+        if (context.User.Identity?.IsAuthenticated == true
+            && Guid.TryParse(context.User.FindFirst("tenant_id")?.Value, out var claimTenant))
+        {
+            if (context.Request.Headers.TryGetValue("X-Tenant-ID", out var hdr)
+                && Guid.TryParse(hdr.FirstOrDefault(), out var hdrTenant)
+                && hdrTenant != claimTenant)
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync("{\"success\":false,\"message\":\"Tenant mismatch\"}");
+                return;
+            }
+
+            context.Items["TenantId"] = claimTenant;
+            await _next(context);
+            return;
+        }
+
+        // 1. From X-Tenant-ID header (anonymous bootstrap: login/register/public config)
         if (context.Request.Headers.TryGetValue("X-Tenant-ID", out var tenantHeader)
             && Guid.TryParse(tenantHeader.FirstOrDefault(), out var headerTenantId))
         {
@@ -219,5 +240,112 @@ public static class HttpContextExtensions
         if (!id.HasValue)
             throw new UnauthorizedAccessException("No active profile selected");
         return id.Value;
+    }
+}
+
+// ── Audit Log ──────────────────────────────────────────────────────────────────
+// Records every privileged mutating request (POST/PUT/PATCH/DELETE under /api/admin)
+// with the acting user, tenant, path and resulting status. Failures here never break
+// the request — an audit write must not take down an admin action.
+public class AuditMiddleware
+{
+    private static readonly HashSet<string> Mutating =
+        new(StringComparer.OrdinalIgnoreCase) { "POST", "PUT", "PATCH", "DELETE" };
+
+    private readonly RequestDelegate _next;
+
+    public AuditMiddleware(RequestDelegate next) => _next = next;
+
+    public async Task InvokeAsync(HttpContext context, OttDbContext db, ILogger<AuditMiddleware> logger)
+    {
+        await _next(context);
+
+        var path = context.Request.Path.Value ?? string.Empty;
+        if (!path.StartsWith("/api/admin", StringComparison.OrdinalIgnoreCase)) return;
+        if (!Mutating.Contains(context.Request.Method)) return;
+
+        try
+        {
+            Guid? actorId = Guid.TryParse(
+                context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var aid)
+                ? aid : null;
+            var tenantId = context.GetTenantIdOrDefault();
+
+            db.AuditLogs.Add(new OTT.Domain.Entities.AuditLog
+            {
+                TenantId = tenantId,
+                ActorUserId = actorId,
+                ActorEmail = context.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value,
+                Action = context.Request.Method,
+                Path = path.Length > 512 ? path[..512] : path,
+                StatusCode = context.Response.StatusCode,
+                IpAddress = context.Connection.RemoteIpAddress?.ToString(),
+                UserAgent = context.Request.Headers.UserAgent.ToString() is { Length: > 0 } ua
+                    ? (ua.Length > 512 ? ua[..512] : ua) : null
+            });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Audit log write failed for {Method} {Path}", context.Request.Method, path);
+        }
+    }
+}
+
+// ── ETag / Conditional GET ─────────────────────────────────────────────────────
+// Adds a content-hash ETag to successful GET JSON responses and answers
+// If-None-Match with 304 Not Modified, saving bandwidth on unchanged catalog data.
+// Sits after UseStaticFiles so large file downloads are already served and not buffered.
+public class ETagMiddleware
+{
+    private readonly RequestDelegate _next;
+
+    public ETagMiddleware(RequestDelegate next) => _next = next;
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        // Only conditional-GET makes sense; everything else passes straight through.
+        if (!HttpMethods.IsGet(context.Request.Method))
+        {
+            await _next(context);
+            return;
+        }
+
+        var originalBody = context.Response.Body;
+        await using var buffer = new MemoryStream();
+        context.Response.Body = buffer;
+
+        try
+        {
+            await _next(context);
+
+            var canHash = context.Response.StatusCode == StatusCodes.Status200OK
+                && buffer.Length > 0
+                && (context.Response.ContentType?.Contains("application/json", StringComparison.OrdinalIgnoreCase) ?? false);
+
+            if (canHash)
+            {
+                var hash = Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(buffer.GetBuffer().AsSpan(0, (int)buffer.Length)));
+                var etag = $"\"{hash[..32]}\""; // 128-bit prefix is plenty for cache validation
+                context.Response.Headers.ETag = etag;
+
+                if (context.Request.Headers.IfNoneMatch == etag)
+                {
+                    context.Response.StatusCode = StatusCodes.Status304NotModified;
+                    context.Response.ContentLength = null;
+                    context.Response.Body = originalBody;
+                    return; // body intentionally not written
+                }
+            }
+
+            buffer.Position = 0;
+            context.Response.Body = originalBody;
+            await buffer.CopyToAsync(originalBody);
+        }
+        finally
+        {
+            context.Response.Body = originalBody;
+        }
     }
 }

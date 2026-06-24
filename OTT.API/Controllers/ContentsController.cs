@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 using OTT.API.Middleware;
 using OTT.Application.DTOs;
 using OTT.Application.Services;
@@ -7,17 +8,25 @@ using OTT.Application.Services;
 namespace OTT.API.Controllers;
 
 // Request bodies
-public record RateRequestDto(decimal Rating);
+public record RateRequestDto([property: System.ComponentModel.DataAnnotations.Range(0, 10)] decimal Rating);
 public record ProgressRequestDto(int WatchedSeconds, int TotalSeconds, Guid? EpisodeId);
 public record WatchlistRequestDto(Guid ContentId);
+public record StreamSessionRequestDto([property: System.ComponentModel.DataAnnotations.Required] Guid StreamSessionId);
 
 [ApiController]
 [Route("api/contents")]
 public class ContentsController : ControllerBase
 {
     private readonly IContentService _content;
+    private readonly IEntitlementService _entitlements;
+    private readonly IStreamSessionService _streamSessions;
 
-    public ContentsController(IContentService content) => _content = content;
+    public ContentsController(IContentService content, IEntitlementService entitlements, IStreamSessionService streamSessions)
+    {
+        _content = content;
+        _entitlements = entitlements;
+        _streamSessions = streamSessions;
+    }
 
     [HttpGet("home")]
     public async Task<IActionResult> GetHome()
@@ -27,6 +36,7 @@ public class ContentsController : ControllerBase
     }
 
     [HttpGet("featured")]
+    [OutputCache(PolicyName = "catalog")]
     public async Task<IActionResult> GetFeatured()
     {
         var items = await _content.GetFeaturedAsync(HttpContext.GetTenantId());
@@ -34,6 +44,7 @@ public class ContentsController : ControllerBase
     }
 
     [HttpGet("trending")]
+    [OutputCache(PolicyName = "catalog")]
     public async Task<IActionResult> GetTrending([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
         var result = await _content.GetTrendingAsync(HttpContext.GetTenantId(), page, pageSize);
@@ -41,6 +52,7 @@ public class ContentsController : ControllerBase
     }
 
     [HttpGet("new-releases")]
+    [OutputCache(PolicyName = "catalog")]
     public async Task<IActionResult> GetNewReleases([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
         var result = await _content.GetNewReleasesAsync(HttpContext.GetTenantId(), page, pageSize);
@@ -82,8 +94,41 @@ public class ContentsController : ControllerBase
     [Authorize]
     public async Task<IActionResult> GetStreamUrl(Guid id, [FromQuery] Guid? episodeId = null)
     {
-        var urls = await _content.GetStreamUrlsAsync(id, HttpContext.GetTenantId(), episodeId);
-        return Ok(ApiResponse<object>.Ok(urls));
+        var tenantId = HttpContext.GetTenantId();
+        var userId = HttpContext.RequireUserId();
+
+        // Paywall: never issue signed stream URLs to a user who isn't entitled to this title.
+        if (!await _entitlements.CanWatchAsync(userId, tenantId, id))
+            return StatusCode(StatusCodes.Status402PaymentRequired,
+                ApiResponse<object>.Fail("A subscription or purchase is required to watch this title."));
+
+        // Per-plan concurrent-stream limit: reserve a slot before handing out playable URLs.
+        var slot = await _streamSessions.StartAsync(userId);
+        if (!slot.Allowed)
+            return StatusCode(StatusCodes.Status409Conflict,
+                ApiResponse<object>.Fail($"Your plan allows {slot.MaxStreams} concurrent stream(s). Stop playback on another device to continue."));
+
+        var urls = await _content.GetStreamUrlsAsync(id, tenantId, episodeId);
+        // streamSessionId is additive: clients heartbeat it (POST /api/streams/heartbeat) and stop it on exit.
+        return Ok(ApiResponse<object>.Ok(new { stream = urls, streamSessionId = slot.SessionId, slot.ActiveStreams, slot.MaxStreams }));
+    }
+
+    /// <summary>Keeps a concurrent-stream slot alive. Send every progress sync (~15s).</summary>
+    [HttpPost("/api/streams/heartbeat")]
+    [Authorize]
+    public async Task<IActionResult> StreamHeartbeat([FromBody] StreamSessionRequestDto req)
+    {
+        await _streamSessions.HeartbeatAsync(HttpContext.RequireUserId(), req.StreamSessionId);
+        return Ok();
+    }
+
+    /// <summary>Releases a concurrent-stream slot when playback stops.</summary>
+    [HttpPost("/api/streams/stop")]
+    [Authorize]
+    public async Task<IActionResult> StreamStop([FromBody] StreamSessionRequestDto req)
+    {
+        await _streamSessions.StopAsync(HttpContext.RequireUserId(), req.StreamSessionId);
+        return Ok();
     }
 
     [HttpGet("{id:guid}/related")]
@@ -94,6 +139,7 @@ public class ContentsController : ControllerBase
     }
 
     [HttpGet("genre/{genreId:guid}")]
+    [OutputCache(PolicyName = "catalog")]
     public async Task<IActionResult> GetByGenre(Guid genreId, [FromQuery] int page = 1, [FromQuery] int pageSize = 30)
     {
         var result = await _content.GetByGenreAsync(genreId, HttpContext.GetTenantId(), page, pageSize);
@@ -151,7 +197,7 @@ public class WatchHistoryController : ControllerBase
     [HttpPost("{contentId:guid}/progress")]
     public async Task<IActionResult> UpdateProgress(Guid contentId, [FromBody] ProgressRequestDto req)
     {
-        await _content.UpdateWatchProgressAsync(HttpContext.RequireProfileId(), contentId, req.WatchedSeconds, req.EpisodeId);
+        await _content.UpdateWatchProgressAsync(HttpContext.RequireProfileId(), contentId, req.WatchedSeconds, req.TotalSeconds, req.EpisodeId);
         return Ok();
     }
 }

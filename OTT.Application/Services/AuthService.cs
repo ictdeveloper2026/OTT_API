@@ -33,6 +33,7 @@ public class AuthService : IAuthService
     private readonly IRedisCacheService _cache;
     private readonly INotificationService _notificationService;
     private readonly IConfiguration _config;
+    private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<AuthService> _logger;
 
     public AuthService(
@@ -41,6 +42,7 @@ public class AuthService : IAuthService
         IRedisCacheService cache,
         INotificationService notificationService,
         IConfiguration config,
+        IHttpClientFactory httpFactory,
         ILogger<AuthService> logger)
     {
         _db = db;
@@ -48,6 +50,7 @@ public class AuthService : IAuthService
         _cache = cache;
         _notificationService = notificationService;
         _config = config;
+        _httpFactory = httpFactory;
         _logger = logger;
     }
 
@@ -120,9 +123,10 @@ public class AuthService : IAuthService
 
     public async Task<AuthResponseDto> RefreshTokenAsync(string refreshToken)
     {
+        var hashed = HashToken(refreshToken);
         var storedToken = await _db.RefreshTokens
             .Include(r => r.User).ThenInclude(u => u.Profiles)
-            .FirstOrDefaultAsync(r => r.Token == refreshToken && !r.IsRevoked);
+            .FirstOrDefaultAsync(r => r.Token == hashed && !r.IsRevoked);
 
         if (storedToken == null || storedToken.ExpiresAt < DateTime.UtcNow)
             throw new UnauthorizedAccessException("Invalid or expired refresh token");
@@ -140,7 +144,7 @@ public class AuthService : IAuthService
     {
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email.ToLower() && u.TenantId == tenantId);
 
-        var otp = new Random().Next(100000, 999999).ToString();
+        var otp = System.Security.Cryptography.RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
         await _cache.SetStringAsync($"otp:{email}:{tenantId}", otp, TimeSpan.FromMinutes(10));
 
         var name = user?.FirstName ?? "User";
@@ -150,11 +154,18 @@ public class AuthService : IAuthService
 
     public async Task<AuthResponseDto> VerifyOtpAsync(VerifyOtpDto request, Guid tenantId)
     {
+        // Brute-force cap: at most 5 verify attempts per OTP window.
+        var attemptsKey = $"otp_attempts:{request.Email}:{tenantId}";
+        var attempts = await _cache.IncrementAsync(attemptsKey, TimeSpan.FromMinutes(10));
+        if (attempts > 5)
+            throw new InvalidOperationException("Too many attempts. Please request a new OTP.");
+
         var cachedOtp = await _cache.GetStringAsync($"otp:{request.Email}:{tenantId}");
         if (cachedOtp == null || cachedOtp != request.Otp)
             throw new InvalidOperationException("Invalid or expired OTP");
 
         await _cache.RemoveAsync($"otp:{request.Email}:{tenantId}");
+        await _cache.RemoveAsync(attemptsKey);
 
         var user = await _db.Users
             .Include(u => u.Profiles)
@@ -254,7 +265,8 @@ public class AuthService : IAuthService
 
     public async Task<bool> LogoutAsync(string refreshToken)
     {
-        var token = await _db.RefreshTokens.FirstOrDefaultAsync(r => r.Token == refreshToken);
+        var hashed = HashToken(refreshToken);
+        var token = await _db.RefreshTokens.FirstOrDefaultAsync(r => r.Token == hashed);
         if (token == null) return false;
 
         token.IsRevoked = true;
@@ -346,6 +358,14 @@ public class AuthService : IAuthService
 
     // ── Private Helpers ──────────────────────────────────────────────────────
 
+    // Refresh tokens are stored hashed at rest: a DB leak doesn't expose usable tokens.
+    // The raw token is returned to the client; lookups hash the incoming token first.
+    private static string HashToken(string token)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token));
+        return Convert.ToBase64String(bytes);
+    }
+
     private async Task<AuthResponseDto> GenerateAuthResponse(User user)
     {
         var accessToken = _jwt.GenerateAccessToken(user);
@@ -354,7 +374,7 @@ public class AuthService : IAuthService
         var refreshToken = new RefreshToken
         {
             UserId = user.Id,
-            Token = refreshTokenStr,
+            Token = HashToken(refreshTokenStr),
             ExpiresAt = DateTime.UtcNow.AddDays(30),
             CreatedAt = DateTime.UtcNow
         };
@@ -374,12 +394,17 @@ public class AuthService : IAuthService
     private async Task<(string email, string? firstName, string? lastName, string? avatarUrl, string? socialId)>
         VerifyGoogleTokenAsync(string token)
     {
-        using var client = new HttpClient();
+        var client = _httpFactory.CreateClient();
         var response = await client.GetFromJsonAsync<GoogleTokenInfo>(
             $"https://oauth2.googleapis.com/tokeninfo?id_token={token}");
 
         if (response == null || string.IsNullOrEmpty(response.Email))
             throw new UnauthorizedAccessException("Invalid Google token");
+
+        // The token must have been issued for OUR app, else any valid Google token works.
+        var expectedAud = _config["Social:Google:ClientId"];
+        if (!string.IsNullOrEmpty(expectedAud) && response.Aud != expectedAud)
+            throw new UnauthorizedAccessException("Google token audience mismatch");
 
         return (response.Email, response.GivenName, response.FamilyName, response.Picture, response.Sub);
     }
@@ -387,7 +412,7 @@ public class AuthService : IAuthService
     private async Task<(string email, string? firstName, string? lastName, string? avatarUrl, string? socialId)>
         VerifyFacebookTokenAsync(string token)
     {
-        using var client = new HttpClient();
+        var client = _httpFactory.CreateClient();
         var appToken = $"{_config["Social:Facebook:AppId"]}|{_config["Social:Facebook:AppSecret"]}";
         var response = await client.GetFromJsonAsync<FacebookUserInfo>(
             $"https://graph.facebook.com/me?access_token={token}&fields=id,email,first_name,last_name,picture");
@@ -398,21 +423,51 @@ public class AuthService : IAuthService
         return (response.Email, response.FirstName, response.LastName, response.Picture?.Data?.Url, response.Id);
     }
 
-    private Task<(string email, string? firstName, string? lastName, string? avatarUrl, string? socialId)>
+    private async Task<(string email, string? firstName, string? lastName, string? avatarUrl, string? socialId)>
         VerifyAppleTokenAsync(string token)
     {
-        // Apple Sign In: decode the identity token (JWT) - simplified
-        var parts = token.Split('.');
-        if (parts.Length < 2) throw new UnauthorizedAccessException("Invalid Apple token");
+        // Validate the Apple identity token's SIGNATURE against Apple's published JWKS,
+        // plus issuer / audience (your bundle id) / expiry. The previous implementation
+        // base64-decoded the payload WITHOUT any verification (identity-spoofing hole).
+        var jwksJson = await _cache.GetStringAsync("apple_jwks");
+        if (string.IsNullOrEmpty(jwksJson))
+        {
+            var client = _httpFactory.CreateClient();
+            jwksJson = await client.GetStringAsync("https://appleid.apple.com/auth/keys");
+            await _cache.SetStringAsync("apple_jwks", jwksJson, TimeSpan.FromHours(24));
+        }
 
-        var payload = System.Text.Json.JsonSerializer.Deserialize<AppleTokenPayload>(
-            System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(
-                parts[1].PadRight(parts[1].Length + (4 - parts[1].Length % 4) % 4, '='))));
+        var keys = new Microsoft.IdentityModel.Tokens.JsonWebKeySet(jwksJson).GetSigningKeys();
+        var parameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKeys = keys,
+            ValidateIssuer = true,
+            ValidIssuer = "https://appleid.apple.com",
+            ValidateAudience = true,
+            ValidAudience = _config["Apple:BundleId"],
+            ValidateLifetime = true
+        };
 
-        if (payload == null || string.IsNullOrEmpty(payload.Email))
+        try
+        {
+            var principal = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler()
+                .ValidateToken(token, parameters, out _);
+            var email = principal.FindFirst("email")?.Value;
+            var sub = principal.FindFirst("sub")?.Value
+                ?? principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(email))
+                throw new UnauthorizedAccessException("Apple token has no email claim");
+            return (email, null, null, null, sub);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            throw;
+        }
+        catch
+        {
             throw new UnauthorizedAccessException("Invalid Apple token");
-
-        return Task.FromResult((payload.Email, (string?)null, (string?)null, (string?)null, payload.Sub));
+        }
     }
 
     private static UserDto MapUserDto(User user) => new()
@@ -440,7 +495,7 @@ public class AuthService : IAuthService
 }
 
 // DTO helpers for social auth
-record GoogleTokenInfo(string Sub, string Email, string? GivenName, string? FamilyName, string? Picture);
+record GoogleTokenInfo(string Sub, string Email, string? GivenName, string? FamilyName, string? Picture, string? Aud);
 record FacebookUserInfo(string Id, string Email, string? FirstName, string? LastName, FacebookPicture? Picture);
 record FacebookPicture(FacebookPictureData? Data);
 record FacebookPictureData(string? Url);

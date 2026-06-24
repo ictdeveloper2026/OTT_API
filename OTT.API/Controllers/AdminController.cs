@@ -77,6 +77,29 @@ public class AdminController : ControllerBase
         return Ok(ApiResponse<object>.Ok(rows));
     }
 
+    // ── Audit Log ──
+    [HttpGet("audit-logs")]
+    public async Task<IActionResult> GetAuditLogs([FromQuery] int page = 1, [FromQuery] int pageSize = 50)
+    {
+        var tenantId = HttpContext.GetTenantId();
+        pageSize = Math.Clamp(pageSize, 1, 200);
+        page = Math.Max(page, 1);
+
+        var query = _db.AuditLogs.AsNoTracking().Where(a => a.TenantId == tenantId);
+        var total = await query.CountAsync();
+        var items = await query
+            .OrderByDescending(a => a.CreatedAt)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(a => new
+            {
+                a.Id, a.ActorUserId, a.ActorEmail, a.Action, a.Path,
+                a.StatusCode, a.IpAddress, a.CreatedAt
+            })
+            .ToListAsync();
+
+        return Ok(ApiResponse<object>.Ok(new { total, page, pageSize, items }));
+    }
+
     // ── Content ──
     [HttpGet("contents")]
     public async Task<IActionResult> GetContents([FromQuery] int page = 1, [FromQuery] int pageSize = 20,
@@ -89,19 +112,19 @@ public class AdminController : ControllerBase
 
     [HttpPut("contents/{id:guid}")]
     public async Task<IActionResult> UpdateContent(Guid id, [FromBody] CreateContentDto dto)
-        => Ok(ApiResponse<object>.Ok(await _content.UpdateContentAsync(id, dto)));
+        => Ok(ApiResponse<object>.Ok(await _content.UpdateContentAsync(id, HttpContext.GetTenantId(), dto)));
 
     [HttpDelete("contents/{id:guid}")]
     public async Task<IActionResult> DeleteContent(Guid id)
     {
-        await _content.DeleteContentAsync(id);
+        await _content.DeleteContentAsync(id, HttpContext.GetTenantId());
         return Ok(new { message = "Deleted" });
     }
 
     [HttpPost("contents/{id:guid}/publish")]
     public async Task<IActionResult> PublishContent(Guid id)
     {
-        await _content.PublishContentAsync(id);
+        await _content.PublishContentAsync(id, HttpContext.GetTenantId());
         return Ok(new { message = "Published" });
     }
 
@@ -178,7 +201,8 @@ public class AdminController : ControllerBase
     [HttpPut("banners/{id:guid}")]
     public async Task<IActionResult> UpdateBanner(Guid id, [FromBody] SaveBannerDto dto)
     {
-        var banner = await _db.Banners.FindAsync(id);
+        var tenantId = HttpContext.GetTenantId();
+        var banner = await _db.Banners.FirstOrDefaultAsync(b => b.Id == id && b.TenantId == tenantId);
         if (banner == null) return NotFound();
         ApplyBanner(banner, dto);
         await _db.SaveChangesAsync();
@@ -188,7 +212,8 @@ public class AdminController : ControllerBase
     [HttpDelete("banners/{id:guid}")]
     public async Task<IActionResult> DeleteBanner(Guid id)
     {
-        var banner = await _db.Banners.FindAsync(id);
+        var tenantId = HttpContext.GetTenantId();
+        var banner = await _db.Banners.FirstOrDefaultAsync(b => b.Id == id && b.TenantId == tenantId);
         if (banner != null) { _db.Banners.Remove(banner); await _db.SaveChangesAsync(); }
         return Ok(new { message = "Deleted" });
     }
@@ -228,7 +253,8 @@ public class AdminController : ControllerBase
     [HttpPut("content-rows/{id:guid}")]
     public async Task<IActionResult> UpdateRow(Guid id, [FromBody] SaveContentRowDto dto)
     {
-        var row = await _db.ContentRows.FindAsync(id);
+        var tenantId = HttpContext.GetTenantId();
+        var row = await _db.ContentRows.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId);
         if (row == null) return NotFound();
         ApplyRow(row, dto);
         await _db.SaveChangesAsync();
@@ -282,7 +308,8 @@ public class AdminController : ControllerBase
     [HttpPut("users/{id:guid}/status")]
     public async Task<IActionResult> UpdateUserStatus(Guid id, [FromBody] UserStatusDto dto)
     {
-        var user = await _db.Users.FindAsync(id);
+        var tenantId = HttpContext.GetTenantId();
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == id && u.TenantId == tenantId);
         if (user == null) return NotFound();
         user.IsBlocked = dto.Status == "blocked";
         user.IsActive = dto.Status != "blocked";
@@ -365,7 +392,8 @@ public class AdminController : ControllerBase
     [HttpPut("plans/{id:guid}")]
     public async Task<IActionResult> UpdatePlan(Guid id, [FromBody] SubscriptionPlanDto dto)
     {
-        var plan = await _db.SubscriptionPlans.FindAsync(id);
+        var tenantId = HttpContext.GetTenantId();
+        var plan = await _db.SubscriptionPlans.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId);
         if (plan == null) return NotFound();
         ApplyPlan(plan, dto);
         await _db.SaveChangesAsync();
@@ -429,7 +457,8 @@ public class AdminController : ControllerBase
     [HttpPut("creators/{id:guid}/approve")]
     public async Task<IActionResult> ApproveCreator(Guid id)
     {
-        var app = await _db.CreatorApplications.FindAsync(id);
+        var tenantId = HttpContext.GetTenantId();
+        var app = await _db.CreatorApplications.FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId);
         if (app == null) return NotFound();
         app.Status = "approved";
         app.ReviewedAt = DateTime.UtcNow;

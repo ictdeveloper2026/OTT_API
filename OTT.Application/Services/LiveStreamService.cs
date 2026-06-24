@@ -30,6 +30,7 @@ public class LiveStreamService : ILiveStreamService
     private readonly OttDbContext _db;
     private readonly IRedisCacheService _cache;
     private readonly IConfiguration _config;
+    private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<LiveStreamService> _logger;
 
     private readonly string _antMediaUrl;
@@ -39,11 +40,13 @@ public class LiveStreamService : ILiveStreamService
         OttDbContext db,
         IRedisCacheService cache,
         IConfiguration config,
+        IHttpClientFactory httpFactory,
         ILogger<LiveStreamService> logger)
     {
         _db = db;
         _cache = cache;
         _config = config;
+        _httpFactory = httpFactory;
         _logger = logger;
         _antMediaUrl = config["AntMedia:ServerUrl"] ?? "https://live.yourdomain.com:5443";
         _antMediaApp = config["AntMedia:AppName"] ?? "live";
@@ -279,7 +282,7 @@ public class LiveStreamService : ILiveStreamService
     {
         try
         {
-            using var client = new HttpClient();
+            var client = _httpFactory.CreateClient();
             var body = JsonSerializer.Serialize(new
             {
                 streamId = streamKey,
@@ -312,7 +315,7 @@ public class LiveStreamService : ILiveStreamService
     {
         try
         {
-            using var client = new HttpClient();
+            var client = _httpFactory.CreateClient();
             await client.DeleteAsync($"{_antMediaUrl}/{_antMediaApp}/rest/v2/broadcasts/{streamId}");
         }
         catch (Exception ex)

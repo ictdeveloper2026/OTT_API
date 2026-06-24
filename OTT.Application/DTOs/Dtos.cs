@@ -1,18 +1,44 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace OTT.Application.DTOs;
 
 // ── Auth DTOs ─────────────────────────────────────────────────────────────────
+// [ApiController] auto-returns 400 ProblemDetails when these annotations fail.
 
-public record LoginRequestDto(string Email, string Password, string? DeviceId);
-public record RegisterRequestDto(string Email, string Password, string FirstName, string LastName, string? Phone);
-public record VerifyOtpDto(string Email, string Otp);
-public record SocialLoginDto(string Provider, string Token, string? DeviceId);
-public record ResetPasswordDto(string Token, string NewPassword);
-public record ChangePasswordDto(string CurrentPassword, string NewPassword);
-public record RefreshTokenRequestDto(string RefreshToken);
-public record ForgotPasswordRequestDto(string Email);
-public record LogoutRequestDto(string RefreshToken);
-public record SendOtpRequestDto(string Email);
-public record SelectProfileRequestDto(Guid ProfileId);
+public record LoginRequestDto(
+    [property: Required, EmailAddress] string Email,
+    [property: Required] string Password,
+    string? DeviceId);
+
+public record RegisterRequestDto(
+    [property: Required, EmailAddress] string Email,
+    [property: Required, MinLength(8), MaxLength(128)] string Password,
+    [property: Required, MaxLength(100)] string FirstName,
+    [property: MaxLength(100)] string LastName,
+    [property: Phone] string? Phone);
+
+public record VerifyOtpDto(
+    [property: Required, EmailAddress] string Email,
+    [property: Required, RegularExpression(@"^\d{6}$", ErrorMessage = "OTP must be 6 digits")] string Otp);
+
+public record SocialLoginDto(
+    [property: Required] string Provider,
+    [property: Required] string Token,
+    string? DeviceId);
+
+public record ResetPasswordDto(
+    [property: Required] string Token,
+    [property: Required, MinLength(8), MaxLength(128)] string NewPassword);
+
+public record ChangePasswordDto(
+    [property: Required] string CurrentPassword,
+    [property: Required, MinLength(8), MaxLength(128)] string NewPassword);
+
+public record RefreshTokenRequestDto([property: Required] string RefreshToken);
+public record ForgotPasswordRequestDto([property: Required, EmailAddress] string Email);
+public record LogoutRequestDto([property: Required] string RefreshToken);
+public record SendOtpRequestDto([property: Required, EmailAddress] string Email);
+public record SelectProfileRequestDto([property: Required] Guid ProfileId);
 
 public class AuthResponseDto
 {
