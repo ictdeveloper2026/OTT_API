@@ -276,6 +276,30 @@ public class WriteBehindFlushJob
     }
 }
 
+// ── Outbox Dispatch Job ────────────────────────────────────────────────────────
+// Drains the email/push outbox and performs the actual SendGrid/FCM delivery off the
+// request thread, with retry + dead-lettering handled inside OutboxService.
+
+public class OutboxDispatchJob
+{
+    private readonly IOutboxService _outbox;
+    private readonly ILogger<OutboxDispatchJob> _logger;
+
+    public OutboxDispatchJob(IOutboxService outbox, ILogger<OutboxDispatchJob> logger)
+    {
+        _outbox = outbox;
+        _logger = logger;
+    }
+
+    [DisableConcurrentExecution(timeoutInSeconds: 120)]
+    public async Task DispatchAsync()
+    {
+        var sent = await _outbox.DispatchPendingAsync(batchSize: 100);
+        if (sent > 0)
+            _logger.LogInformation("Outbox dispatched {Count} message(s)", sent);
+    }
+}
+
 // ── Hangfire Scheduler ────────────────────────────────────────────────────────
 
 public static class HangfireScheduler
@@ -286,6 +310,12 @@ public static class HangfireScheduler
         RecurringJob.AddOrUpdate<WriteBehindFlushJob>(
             "write-behind-flush",
             job => job.FlushAsync(),
+            "* * * * *");
+
+        // Outbox dispatch (email/push) - every minute
+        RecurringJob.AddOrUpdate<OutboxDispatchJob>(
+            "outbox-dispatch",
+            job => job.DispatchAsync(),
             "* * * * *");
 
         // Subscription renewals - every hour

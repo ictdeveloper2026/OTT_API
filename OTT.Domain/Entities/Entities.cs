@@ -630,6 +630,21 @@ namespace OTT.Domain.Entities
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     }
 
+    // ── Outbox (async email/push delivery with retry + DLQ) ────────────────────
+    public class OutboxMessage
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public string Channel { get; set; } = "email";    // email | push
+        public string Payload { get; set; } = string.Empty; // channel-specific JSON
+        public string Status { get; set; } = "pending";    // pending | sent | failed (DLQ)
+        public int Attempts { get; set; }
+        public int MaxAttempts { get; set; } = 5;
+        public string? LastError { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime NextAttemptAt { get; set; } = DateTime.UtcNow;
+        public DateTime? SentAt { get; set; }
+    }
+
     // ── Audit Log (admin/privileged action trail — compliance) ─────────────────
     public class AuditLog
     {

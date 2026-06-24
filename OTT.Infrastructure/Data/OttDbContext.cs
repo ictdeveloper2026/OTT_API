@@ -47,6 +47,7 @@ public class OttDbContext : DbContext
     public DbSet<StorageConfiguration> StorageConfigurations => Set<StorageConfiguration>();
     public DbSet<IptvChannel> IptvChannels => Set<IptvChannel>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -365,6 +366,18 @@ public class OttDbContext : DbContext
             e.Property(x => x.ActorEmail).HasMaxLength(256);
             e.Property(x => x.IpAddress).HasMaxLength(64);
             e.Property(x => x.UserAgent).HasMaxLength(512);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+        });
+
+        // OutboxMessage
+        modelBuilder.Entity<OutboxMessage>(e =>
+        {
+            e.HasKey(x => x.Id);
+            // The dispatch job polls due pending messages: (Status, NextAttemptAt).
+            e.HasIndex(x => new { x.Status, x.NextAttemptAt });
+            e.Property(x => x.Channel).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasDefaultValue("pending");
+            e.Property(x => x.LastError).HasMaxLength(2000);
             e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 

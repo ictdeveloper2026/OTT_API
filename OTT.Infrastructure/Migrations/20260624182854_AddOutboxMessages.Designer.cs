@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OTT.Infrastructure.Data;
 
@@ -11,9 +12,11 @@ using OTT.Infrastructure.Data;
 namespace OTT.Infrastructure.Migrations
 {
     [DbContext(typeof(OttDbContext))]
-    partial class OttDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260624182854_AddOutboxMessages")]
+    partial class AddOutboxMessages
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

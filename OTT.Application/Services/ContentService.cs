@@ -431,14 +431,21 @@ public class ContentService : IContentService
             _db.UserRatings.Add(new UserRating { ProfileId = profileId, ContentId = contentId, Rating = rating, CreatedAt = DateTime.UtcNow });
         else
             existing.Rating = rating;
+        // Persist the rating first so the AVG() below reflects this change.
+        await _db.SaveChangesAsync();
 
-        // Update average
-        var allRatings = await _db.UserRatings.Where(r => r.ContentId == contentId).Select(r => r.Rating).ToListAsync();
+        // Recompute the average in SQL (AVG) instead of materializing every rating row —
+        // a single aggregate query that stays cheap on popular titles.
+        var average = await _db.UserRatings
+            .Where(r => r.ContentId == contentId)
+            .AverageAsync(r => (decimal?)r.Rating) ?? rating;
+
         var content = await _db.Contents.FindAsync(contentId);
         if (content != null)
-            content.AverageRating = allRatings.Count == 0 ? rating : allRatings.Average();
-
-        await _db.SaveChangesAsync();
+        {
+            content.AverageRating = average;
+            await _db.SaveChangesAsync();
+        }
         return true;
     }
 
