@@ -6,39 +6,39 @@ namespace OTT.Application.DTOs;
 // [ApiController] auto-returns 400 ProblemDetails when these annotations fail.
 
 public record LoginRequestDto(
-    [property: Required, EmailAddress] string Email,
-    [property: Required] string Password,
+    [Required, EmailAddress] string Email,
+    [Required] string Password,
     string? DeviceId);
 
 public record RegisterRequestDto(
-    [property: Required, EmailAddress] string Email,
-    [property: Required, MinLength(8), MaxLength(128)] string Password,
-    [property: Required, MaxLength(100)] string FirstName,
-    [property: MaxLength(100)] string LastName,
-    [property: Phone] string? Phone);
+    [Required, EmailAddress] string Email,
+    [Required, MinLength(8), MaxLength(128)] string Password,
+    [Required, MaxLength(100)] string FirstName,
+    [MaxLength(100)] string LastName,
+    [Phone] string? Phone);
 
 public record VerifyOtpDto(
-    [property: Required, EmailAddress] string Email,
-    [property: Required, RegularExpression(@"^\d{6}$", ErrorMessage = "OTP must be 6 digits")] string Otp);
+    [Required, EmailAddress] string Email,
+    [Required, RegularExpression(@"^\d{6}$", ErrorMessage = "OTP must be 6 digits")] string Otp);
 
 public record SocialLoginDto(
-    [property: Required] string Provider,
-    [property: Required] string Token,
+    [Required] string Provider,
+    [Required] string Token,
     string? DeviceId);
 
 public record ResetPasswordDto(
-    [property: Required] string Token,
-    [property: Required, MinLength(8), MaxLength(128)] string NewPassword);
+    [Required] string Token,
+    [Required, MinLength(8), MaxLength(128)] string NewPassword);
 
 public record ChangePasswordDto(
-    [property: Required] string CurrentPassword,
-    [property: Required, MinLength(8), MaxLength(128)] string NewPassword);
+    [Required] string CurrentPassword,
+    [Required, MinLength(8), MaxLength(128)] string NewPassword);
 
-public record RefreshTokenRequestDto([property: Required] string RefreshToken);
-public record ForgotPasswordRequestDto([property: Required, EmailAddress] string Email);
-public record LogoutRequestDto([property: Required] string RefreshToken);
-public record SendOtpRequestDto([property: Required, EmailAddress] string Email);
-public record SelectProfileRequestDto([property: Required] Guid ProfileId);
+public record RefreshTokenRequestDto([Required] string RefreshToken);
+public record ForgotPasswordRequestDto([Required, EmailAddress] string Email);
+public record LogoutRequestDto([Required] string RefreshToken);
+public record SendOtpRequestDto([Required, EmailAddress] string Email);
+public record SelectProfileRequestDto([Required] Guid ProfileId);
 
 public class AuthResponseDto
 {

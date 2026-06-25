@@ -8,13 +8,13 @@ using OTT.Application.Services;
 namespace OTT.API.Controllers;
 
 // Request bodies
-public record RateRequestDto([property: System.ComponentModel.DataAnnotations.Range(0, 10)] decimal Rating);
+public record RateRequestDto([System.ComponentModel.DataAnnotations.Range(0, 10)] decimal Rating);
 public record ProgressRequestDto(
-    [property: System.ComponentModel.DataAnnotations.Range(0, int.MaxValue)] int WatchedSeconds,
-    [property: System.ComponentModel.DataAnnotations.Range(0, int.MaxValue)] int TotalSeconds,
+    [System.ComponentModel.DataAnnotations.Range(0, int.MaxValue)] int WatchedSeconds,
+    [System.ComponentModel.DataAnnotations.Range(0, int.MaxValue)] int TotalSeconds,
     Guid? EpisodeId);
 public record WatchlistRequestDto(Guid ContentId);
-public record StreamSessionRequestDto([property: System.ComponentModel.DataAnnotations.Required] Guid StreamSessionId);
+public record StreamSessionRequestDto([System.ComponentModel.DataAnnotations.Required] Guid StreamSessionId);
 
 [ApiController]
 [Route("api/contents")]

@@ -16,17 +16,17 @@ public record SaveBannerDto(string? Title, string? Subtitle, string Type, string
     string? MobileImageUrl, string? CtaText, string? CtaAction, Guid? ContentId, int SortOrder, bool IsActive);
 public record SaveContentRowDto(string Title, string RowType, string? SourceValue, string DisplayStyle, int SortOrder, int MaxItems, bool IsActive);
 public record SaveGenreDto(
-    [property: System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MaxLength(100)] string Name,
-    [property: System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MaxLength(100)] string Slug,
+    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MaxLength(100)] string Name,
+    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MaxLength(100)] string Slug,
     string? IconUrl, int SortOrder);
 public record SavePromoDto(
-    [property: System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MaxLength(100)] string Code,
-    [property: System.ComponentModel.DataAnnotations.RegularExpression("^(percentage|fixed)$", ErrorMessage = "DiscountType must be 'percentage' or 'fixed'")] string DiscountType,
-    [property: System.ComponentModel.DataAnnotations.Range(0, 1000000)] decimal DiscountValue,
-    [property: System.ComponentModel.DataAnnotations.Range(1, int.MaxValue)] int? MaxUses,
+    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MaxLength(100)] string Code,
+    [System.ComponentModel.DataAnnotations.RegularExpression("^(percentage|fixed)$", ErrorMessage = "DiscountType must be 'percentage' or 'fixed'")] string DiscountType,
+    [System.ComponentModel.DataAnnotations.Range(0, 1000000)] decimal DiscountValue,
+    [System.ComponentModel.DataAnnotations.Range(1, int.MaxValue)] int? MaxUses,
     DateTime? ExpiresAt);
 public record UserStatusDto(
-    [property: System.ComponentModel.DataAnnotations.RegularExpression("^(active|blocked)$", ErrorMessage = "Status must be 'active' or 'blocked'")] string Status); // active | blocked
+    [System.ComponentModel.DataAnnotations.RegularExpression("^(active|blocked)$", ErrorMessage = "Status must be 'active' or 'blocked'")] string Status); // active | blocked
 public record UpdateConfigValueDto(string? Value, bool IsPublic);
 
 [ApiController]
