@@ -238,6 +238,7 @@ builder.Services.AddScoped<IOutboxService, OutboxService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ISmsService, TwilioSmsService>();
 builder.Services.AddSingleton<IFeatureFlagService, FeatureFlagService>();
+builder.Services.AddScoped<IGdprService, GdprService>();
 builder.Services.AddScoped<IS3StorageService, S3StorageService>();
 builder.Services.AddScoped<ICloudFrontCdnService, CloudFrontCdnService>();
 // Admin-configurable, hot-reloadable storage (DB-backed, falls back to appsettings)

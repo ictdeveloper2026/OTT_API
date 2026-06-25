@@ -1,0 +1,117 @@
+# Self-contained backend stack for the OTT_API repo (this directory IS the git repo root).
+# Build contexts are relative to this file, so the stack is version-controlled and deployable
+# from the repo alone. The platform-level compose (../docker-compose.yml) additionally wires
+# nginx / Elasticsearch / the Flutter build and lives outside this repo.
+#
+#   docker compose up -d --build
+#
+version: '3.9'
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: ott_sqlserver
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-Strong!Passw0rd}
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    networks: [ott_network]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"${MSSQL_SA_PASSWORD:-Strong!Passw0rd}\" -No -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: ott_redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret} --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks: [ott_network]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ott_api
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=ott_platform;User Id=sa;Password=${MSSQL_SA_PASSWORD:-Strong!Passw0rd};TrustServerCertificate=True;MultipleActiveResultSets=True;"
+      ConnectionStrings__Redis: "redis:6379,password=${REDIS_PASSWORD:-redis_secret}"
+      Jwt__Secret: ${JWT_SECRET:?set a strong 64+ char JWT secret}
+      Jwt__Issuer: OTTPlatform
+      Jwt__Audience: OTTPlatformUsers
+      AWS__Region: ${AWS_REGION:-ap-south-1}
+      AWS__AccessKey: ${AWS_ACCESS_KEY}
+      AWS__SecretKey: ${AWS_SECRET_KEY}
+      AWS__S3__BucketName: ${S3_BUCKET}
+      AWS__CloudFront__Domain: ${CLOUDFRONT_DOMAIN}
+      AWS__CloudFront__KeyPairId: ${CLOUDFRONT_KEY_PAIR_ID}
+      SendGrid__ApiKey: ${SENDGRID_API_KEY}
+      Twilio__AccountSid: ${TWILIO_ACCOUNT_SID}
+      Twilio__AuthToken: ${TWILIO_AUTH_TOKEN}
+      Twilio__FromNumber: ${TWILIO_FROM_NUMBER}
+      App__BaseUrl: ${APP_BASE_URL:-https://yourapp.com}
+      # Transcoding is offloaded to the worker, so the API drains only the default queue.
+      Hangfire__Queues__0: default
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keys:/app/keys:ro
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [ott_network]
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: ott_worker
+    restart: unless-stopped
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=ott_platform;User Id=sa;Password=${MSSQL_SA_PASSWORD:-Strong!Passw0rd};TrustServerCertificate=True;MultipleActiveResultSets=True;"
+      ConnectionStrings__Redis: "redis:6379,password=${REDIS_PASSWORD:-redis_secret}"
+      AWS__Region: ${AWS_REGION:-ap-south-1}
+      AWS__AccessKey: ${AWS_ACCESS_KEY}
+      AWS__SecretKey: ${AWS_SECRET_KEY}
+      AWS__S3__BucketName: ${S3_BUCKET}
+      AWS__CloudFront__Domain: ${CLOUDFRONT_DOMAIN}
+      AWS__CloudFront__KeyPairId: ${CLOUDFRONT_KEY_PAIR_ID}
+      Worker__Count: ${WORKER_COUNT:-2}
+    volumes:
+      - transcoding_temp:/tmp/ott_transcode
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [ott_network]
+
+networks:
+  ott_network:
+    driver: bridge
+
+volumes:
+  mssql_data:
+  redis_data:
+  transcoding_temp:
