@@ -6,30 +6,8 @@ using OTT.Infrastructure.Services;
 
 namespace OTT.API.Jobs;
 
-// ── Transcoding Job ────────────────────────────────────────────────────────────
-
-public class TranscodingJob
-{
-    private readonly IVideoService _videoService;
-    private readonly OttDbContext _db;
-    private readonly ILogger<TranscodingJob> _logger;
-
-    public TranscodingJob(IVideoService videoService, OttDbContext db, ILogger<TranscodingJob> logger)
-    {
-        _videoService = videoService;
-        _db = db;
-        _logger = logger;
-    }
-
-    [AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 60, 300 })]
-    public async Task ProcessAsync(Guid assetId, string sourceKey)
-    {
-        _logger.LogInformation("Processing transcoding job for asset {AssetId}", assetId);
-        var success = await _videoService.ProcessTranscodingJobAsync(assetId, sourceKey);
-        if (!success)
-            throw new InvalidOperationException($"Transcoding failed for asset {assetId}");
-    }
-}
+// TranscodingJob moved to OTT.Application.Services.TranscodingJob so the out-of-process
+// worker host can share the type. It is routed to the "transcoding" Hangfire queue.
 
 // ── Subscription Renewal Job ──────────────────────────────────────────────────
 

@@ -358,12 +358,24 @@ public class ConfigController : ControllerBase
     private readonly OttDbContext _db;
     private readonly IDynamicSettingsService _settings;
     private readonly IConfiguration _config;
+    private readonly OTT.Application.Services.IFeatureFlagService _flags;
 
-    public ConfigController(OttDbContext db, IDynamicSettingsService settings, IConfiguration config)
+    public ConfigController(OttDbContext db, IDynamicSettingsService settings, IConfiguration config,
+        OTT.Application.Services.IFeatureFlagService flags)
     {
         _db = db;
         _settings = settings;
         _config = config;
+        _flags = flags;
+    }
+
+    // Feature flags evaluated for the current caller (honours %-rollout + targeting). The client
+    // should read these per-user rather than the raw values in /public.
+    [HttpGet("features")]
+    public async Task<IActionResult> GetFeatures()
+    {
+        var flags = await _flags.EvaluateAllAsync(HttpContext.GetTenantId(), HttpContext.GetUserId());
+        return Ok(ApiResponse<object>.Ok(flags));
     }
 
     // One-call bootstrap for the client app: branding + feature flags + enabled

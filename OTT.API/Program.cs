@@ -183,7 +183,16 @@ builder.Services.AddHangfire(cfg => cfg
         QueuePollInterval = TimeSpan.FromSeconds(5),
         PrepareSchemaIfNecessary = true
     }));
-builder.Services.AddHangfireServer(opts => opts.WorkerCount = 4);
+// Queues this API instance processes. By default it handles both so a single-host deploy still
+// transcodes; set Hangfire:Queues="default" once a dedicated OTT.Worker is running so heavy
+// transcoding is drained out-of-process.
+var hangfireQueues = builder.Configuration.GetSection("Hangfire:Queues").Get<string[]>()
+    ?? new[] { OTT.Application.Services.JobQueues.Default, OTT.Application.Services.JobQueues.Transcoding };
+builder.Services.AddHangfireServer(opts =>
+{
+    opts.WorkerCount = 4;
+    opts.Queues = hangfireQueues;
+});
 
 // ── AWS S3 / S3-compatible storage ─────────────────────────────────────────────
 // Set AWS:S3:ServiceUrl to point at any S3-compatible provider (MinIO, Wasabi,
@@ -228,6 +237,7 @@ builder.Services.AddScoped<ILiveStreamService, LiveStreamService>();
 builder.Services.AddScoped<IOutboxService, OutboxService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ISmsService, TwilioSmsService>();
+builder.Services.AddSingleton<IFeatureFlagService, FeatureFlagService>();
 builder.Services.AddScoped<IS3StorageService, S3StorageService>();
 builder.Services.AddScoped<ICloudFrontCdnService, CloudFrontCdnService>();
 // Admin-configurable, hot-reloadable storage (DB-backed, falls back to appsettings)
@@ -237,6 +247,7 @@ builder.Services.AddSingleton<IDynamicSettingsService, DynamicSettingsService>()
 // IPTV channel sync (iptv-org)
 builder.Services.AddScoped<IIptvSyncService, IptvSyncService>();
 builder.Services.AddSingleton<IHubService, HubService>();
+builder.Services.AddScoped<IVideoJobQueue, HangfireVideoJobQueue>();
 builder.Services.AddTransient<TranscodingJob>();
 builder.Services.AddTransient<WriteBehindFlushJob>();
 builder.Services.AddTransient<OutboxDispatchJob>();

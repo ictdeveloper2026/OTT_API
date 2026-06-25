@@ -28,6 +28,7 @@ public class VideoService : IVideoService
     private readonly ICloudFrontCdnService _cdn;
     private readonly IConfiguration _config;
     private readonly IHttpClientFactory _httpFactory;
+    private readonly IVideoJobQueue _jobQueue;
     private readonly ILogger<VideoService> _logger;
 
     private static readonly string[] Qualities = ["1080p", "720p", "480p", "360p"];
@@ -45,6 +46,7 @@ public class VideoService : IVideoService
         ICloudFrontCdnService cdn,
         IConfiguration config,
         IHttpClientFactory httpFactory,
+        IVideoJobQueue jobQueue,
         ILogger<VideoService> logger)
     {
         _db = db;
@@ -52,6 +54,7 @@ public class VideoService : IVideoService
         _cdn = cdn;
         _config = config;
         _httpFactory = httpFactory;
+        _jobQueue = jobQueue;
         _logger = logger;
     }
 
@@ -137,11 +140,13 @@ public class VideoService : IVideoService
         asset.TranscodingStartedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
-        // In production this would enqueue a Hangfire job
-        // For now, return job ID immediately
-        var jobId = $"transcode_{request.AssetId}_{DateTime.UtcNow.Ticks}";
-        _logger.LogInformation("Transcoding job queued: {JobId} for asset {AssetId}", jobId, request.AssetId);
+        // Enqueue onto the dedicated transcoding queue, drained out-of-process by the worker host.
+        var sourceKey = !string.IsNullOrWhiteSpace(request.SourceKey) ? request.SourceKey : asset.OriginalKey;
+        if (string.IsNullOrWhiteSpace(sourceKey))
+            throw new InvalidOperationException("No source key to transcode (asset has no OriginalKey).");
 
+        var jobId = _jobQueue.EnqueueTranscoding(request.AssetId, sourceKey);
+        _logger.LogInformation("Transcoding job {JobId} enqueued for asset {AssetId}", jobId, request.AssetId);
         return jobId;
     }
 
