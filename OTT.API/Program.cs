@@ -154,15 +154,23 @@ builder.Services.AddOutputCache(opts =>
 });
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
-// Set Cors:Origins (string[]) in production to restrict to known front-ends. When
-// unset (local dev) it stays permissive so the web client / Swagger keep working.
-var corsOrigins = builder.Configuration.GetSection("Cors:Origins").Get<string[]>();
+// Set Cors:Origins to restrict to known front-ends. Accepts either a JSON array
+// (Cors:Origins:0, :1 …) or a single comma/semicolon-separated string so it can be
+// supplied from one deploy env var (Cors__Origins="https://app.example.com,https://www.example.com").
+// In Development (only) it stays permissive so the web client / Swagger keep working.
+// In Production with no origins configured we DO NOT reflect arbitrary origins with
+// credentials — that would let any site make authenticated calls. Cross-origin is
+// blocked instead (same-origin still works); set Cors:Origins to allow your front-end.
+var corsOrigins = (builder.Configuration.GetSection("Cors:Origins").Get<string[]>()
+        ?? builder.Configuration["Cors:Origins"]?.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    ?.Where(o => !string.IsNullOrWhiteSpace(o)).ToArray() ?? Array.Empty<string>();
 builder.Services.AddCors(opts => opts.AddPolicy("AllowAll", policy =>
 {
-    if (corsOrigins is { Length: > 0 })
+    if (corsOrigins.Length > 0)
         policy.WithOrigins(corsOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials();
-    else
+    else if (builder.Environment.IsDevelopment())
         policy.AllowAnyHeader().AllowAnyMethod().AllowCredentials().SetIsOriginAllowed(_ => true);
+    // else (Production, no origins): leave the policy empty → cross-origin requests are blocked.
 }));
 
 // ── SignalR ───────────────────────────────────────────────────────────────────
