@@ -135,9 +135,11 @@ public class S3StorageService : IS3StorageService
         do
         {
             response = await _s3Client.ListObjectsV2Async(request);
-            keys.AddRange(response.S3Objects.Select(o => o.Key));
+            // AWS SDK v4 returns null (not an empty list) when there are no objects.
+            if (response.S3Objects is { Count: > 0 })
+                keys.AddRange(response.S3Objects.Select(o => o.Key));
             request.ContinuationToken = response.NextContinuationToken;
-        } while (response.IsTruncated);
+        } while (response.IsTruncated == true); // IsTruncated is bool? in v4
 
         return keys;
     }

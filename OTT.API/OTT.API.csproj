@@ -12,7 +12,15 @@
 
   <ItemGroup>
     <!-- ASP.NET Core -->
+    <PackageReference Include="Asp.Versioning.Mvc" Version="8.1.0" />
+    <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="8.1.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="8.0.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.9.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.9.0" />
 
     <!-- Swagger / OpenAPI -->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
@@ -27,30 +35,19 @@
 
     <!-- Hangfire -->
     <PackageReference Include="Hangfire.AspNetCore" Version="1.8.9" />
-    <PackageReference Include="Hangfire.MySqlStorage" Version="2.0.3" />
+    <PackageReference Include="Hangfire.SqlServer" Version="1.8.9" />
 
     <!-- Health Checks -->
-    <PackageReference Include="AspNetCore.HealthChecks.MySql" Version="8.0.0" />
+    <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.0" />
     <PackageReference Include="AspNetCore.HealthChecks.Redis" Version="8.0.0" />
 
-    <!-- Rate Limiting -->
+    <!-- Resilience (retry / timeout / circuit breaker on outbound HTTP) -->
+    <PackageReference Include="Polly" Version="8.3.0" />
 
     <!-- Serilog -->
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
-  </ItemGroup>
-
-  <!--
-    TEMPORARY: these controllers were written against a different (non-existent) service
-    architecture (int IDs, result objects, IPaymentService/IAdminService/etc. that don't exist).
-    Excluded from the build until they are migrated to the canonical design, the way
-    AuthController and AdditionalControllers already are. Remove entries here as each is migrated.
-  -->
-  <ItemGroup>
-    <Compile Remove="Controllers\AdminController.cs" />
-    <Compile Remove="Controllers\SubscriptionController.cs" />
-    <Compile Remove="Controllers\ContentsController.cs" />
   </ItemGroup>
 
   <ItemGroup>

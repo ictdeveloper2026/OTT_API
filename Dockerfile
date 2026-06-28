@@ -2,15 +2,17 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# Copy solution and project files
+# Copy solution and project files (all projects so the .sln resolves; restore only the API graph)
 COPY *.sln ./
 COPY OTT.API/*.csproj ./OTT.API/
 COPY OTT.Application/*.csproj ./OTT.Application/
 COPY OTT.Domain/*.csproj ./OTT.Domain/
 COPY OTT.Infrastructure/*.csproj ./OTT.Infrastructure/
+COPY OTT.Worker/*.csproj ./OTT.Worker/
+COPY OTT.Tests/*.csproj ./OTT.Tests/
 
 # Restore
-RUN dotnet restore
+RUN dotnet restore OTT.API/OTT.API.csproj
 
 # Copy everything else and build
 COPY . .

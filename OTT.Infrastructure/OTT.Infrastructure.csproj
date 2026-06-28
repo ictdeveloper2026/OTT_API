@@ -10,15 +10,19 @@
   <ItemGroup>
     <!-- Entity Framework Core + MySQL -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
-    <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
 
     <!-- Redis -->
     <PackageReference Include="StackExchange.Redis" Version="2.7.17" />
     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.0" />
 
-    <!-- AWS SDK -->
-    <PackageReference Include="AWSSDK.S3" Version="3.7.305.25" />
-    <PackageReference Include="AWSSDK.CloudFront" Version="3.7.304.14" />
+    <!-- AWS SDK (v4 — 3.7.x line pulls AWSSDK.Core 3.7.400 which has GHSA-mvm6-f9r3-fgfx) -->
+    <PackageReference Include="AWSSDK.S3" Version="4.0.24.4" />
+    <PackageReference Include="AWSSDK.CloudFront" Version="4.0.17.4" />
 
     <!-- JWT -->
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.3.1" />

@@ -19,6 +19,13 @@
 
     <!-- Entity Framework (for service layer queries) -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
+
+    <!-- IHttpClientFactory (pooled HttpClient for external API calls) -->
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
+
+    <!-- Hangfire job attributes only (Queue/AutomaticRetry) — shared job types; no server here -->
+    <PackageReference Include="Hangfire.Core" Version="1.8.9" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

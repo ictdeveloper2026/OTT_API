@@ -1,11 +1,4 @@
-using FirebaseAdmin.Messaging;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
-using OTT.Infrastructure.Data;
-using OTT.Infrastructure.Services;
-using SendGrid;
-using SendGrid.Helpers.Mail;
-using Microsoft.EntityFrameworkCore;
 
 namespace OTT.Application.Services;
 
@@ -22,26 +15,16 @@ public interface INotificationService
     Task SendEmailAsync(string toEmail, string toName, string subject, string htmlContent);
 }
 
+// Composes notification content and hands it to the outbox; the actual SendGrid/FCM
+// delivery happens off the request thread in OutboxService (with retry + DLQ).
 public class NotificationService : INotificationService
 {
-    private readonly OttDbContext _db;
-    private readonly IConfiguration _config;
-    private readonly IDynamicSettingsService _settings;
-    private readonly ILogger<NotificationService> _logger;
-    private readonly string _sendGridKey;
-    private readonly string _fromEmail;
-    private readonly string _fromName;
+    private readonly IOutboxService _outbox;
     private readonly string _appBaseUrl;
 
-    public NotificationService(OttDbContext db, IConfiguration config, IDynamicSettingsService settings, ILogger<NotificationService> logger)
+    public NotificationService(IOutboxService outbox, IConfiguration config)
     {
-        _db = db;
-        _config = config;
-        _settings = settings;
-        _logger = logger;
-        _sendGridKey = config["SendGrid:ApiKey"] ?? "";
-        _fromEmail = config["SendGrid:FromEmail"] ?? "noreply@ottplatform.com";
-        _fromName = config["SendGrid:FromName"] ?? "OTT Platform";
+        _outbox = outbox;
         _appBaseUrl = config["App:BaseUrl"] ?? "https://app.ottplatform.com";
     }
 
@@ -156,118 +139,13 @@ public class NotificationService : INotificationService
         await SendEmailAsync(email, name, $"New: {contentTitle}", html);
     }
 
-    public async Task SendPushNotificationAsync(Guid userId, string title, string body, Dictionary<string, string>? data = null)
-    {
-        var tokens = await _db.DeviceTokens
-            .Where(d => d.UserId == userId && d.IsActive)
-            .Select(d => d.Token)
-            .ToListAsync();
+    public Task SendPushNotificationAsync(Guid userId, string title, string body, Dictionary<string, string>? data = null)
+        => _outbox.EnqueuePushAsync(new[] { userId }, title, body, data);
 
-        if (!tokens.Any()) return;
-        await SendFcmMulticastAsync(tokens, title, body, data);
-    }
+    public Task SendBulkPushAsync(List<Guid> userIds, string title, string body, Dictionary<string, string>? data = null)
+        => _outbox.EnqueuePushAsync(userIds, title, body, data);
 
-    public async Task SendBulkPushAsync(List<Guid> userIds, string title, string body, Dictionary<string, string>? data = null)
-    {
-        var tokens = await _db.DeviceTokens
-            .Where(d => userIds.Contains(d.UserId) && d.IsActive)
-            .Select(d => d.Token)
-            .ToListAsync();
-
-        if (!tokens.Any()) return;
-
-        // FCM allows max 500 per multicast
-        foreach (var batch in tokens.Chunk(500))
-            await SendFcmMulticastAsync(batch.ToList(), title, body, data);
-    }
-
-    public async Task SendEmailAsync(string toEmail, string toName, string subject, string htmlContent)
-    {
-        // Resolve from dynamic (admin-configurable) settings first, then appsettings.
-        var sendGridKey = await _settings.GetAsync(Guid.Empty, SettingKeys.SendGridApiKey, _sendGridKey);
-        var fromEmail = await _settings.GetAsync(Guid.Empty, SettingKeys.EmailFrom, _fromEmail) ?? _fromEmail;
-        var fromName = await _settings.GetAsync(Guid.Empty, SettingKeys.EmailFromName, _fromName) ?? _fromName;
-
-        if (string.IsNullOrEmpty(sendGridKey))
-        {
-            _logger.LogWarning("SendGrid API key not configured. Skipping email to {Email}", toEmail);
-            return;
-        }
-
-        try
-        {
-            var client = new SendGridClient(sendGridKey);
-            var from = new EmailAddress(fromEmail, fromName);
-            var to = new EmailAddress(toEmail, toName);
-            var msg = MailHelper.CreateSingleEmail(from, to, subject, null, htmlContent);
-            var response = await client.SendEmailAsync(msg);
-
-            if (!response.IsSuccessStatusCode)
-                _logger.LogError("SendGrid failed for {Email}: {Status}", toEmail, response.StatusCode);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to send email to {Email}", toEmail);
-        }
-    }
-
-    private async Task SendFcmMulticastAsync(List<string> tokens, string title, string body, Dictionary<string, string>? data)
-    {
-        try
-        {
-            var message = new MulticastMessage
-            {
-                Tokens = tokens,
-                Notification = new Notification { Title = title, Body = body },
-                Data = data ?? new Dictionary<string, string>(),
-                Android = new AndroidConfig
-                {
-                    Priority = Priority.High,
-                    Notification = new AndroidNotification
-                    {
-                        Icon = "notification_icon",
-                        Color = "#E50914",
-                        Sound = "default"
-                    }
-                },
-                Apns = new ApnsConfig
-                {
-                    Aps = new Aps
-                    {
-                        Alert = new ApsAlert { Title = title, Body = body },
-                        Sound = "default",
-                        Badge = 1
-                    }
-                }
-            };
-
-            var response = await FirebaseMessaging.DefaultInstance.SendEachForMulticastAsync(message);
-            _logger.LogInformation("FCM sent: {Success}/{Total}", response.SuccessCount, tokens.Count);
-
-            // Remove invalid tokens
-            var invalidTokens = new List<string>();
-            for (int i = 0; i < response.Responses.Count; i++)
-            {
-                if (!response.Responses[i].IsSuccess)
-                {
-                    var errorCode = response.Responses[i].Exception?.MessagingErrorCode;
-                    if (errorCode == MessagingErrorCode.Unregistered || errorCode == MessagingErrorCode.InvalidArgument)
-                        invalidTokens.Add(tokens[i]);
-                }
-            }
-
-            if (invalidTokens.Any())
-            {
-                var tokensToDeactivate = await _db.DeviceTokens
-                    .Where(d => invalidTokens.Contains(d.Token))
-                    .ToListAsync();
-                tokensToDeactivate.ForEach(t => t.IsActive = false);
-                await _db.SaveChangesAsync();
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "FCM multicast failed");
-        }
-    }
+    // Enqueue to the outbox and return immediately — never blocks the request on SendGrid.
+    public Task SendEmailAsync(string toEmail, string toName, string subject, string htmlContent)
+        => _outbox.EnqueueEmailAsync(toEmail, toName, subject, htmlContent);
 }

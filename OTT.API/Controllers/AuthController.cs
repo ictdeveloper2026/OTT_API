@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using OTT.API.Middleware;
 using OTT.Application.DTOs;
 using OTT.Application.Services;
@@ -8,6 +9,7 @@ namespace OTT.API.Controllers;
 
 [ApiController]
 [Route("api/auth")]
+[EnableRateLimiting("auth")]
 public class AuthController : ControllerBase
 {
     private readonly IAuthService _auth;
@@ -95,5 +97,15 @@ public class AuthController : ControllerBase
     {
         await _auth.LogoutAsync(req.RefreshToken);
         return Ok(new { message = "Logged out" });
+    }
+
+    // Issues a fresh token carrying the selected profile (so profile-scoped
+    // features like watchlist / continue-watching work).
+    [HttpPost("select-profile")]
+    [Authorize]
+    public async Task<IActionResult> SelectProfile([FromBody] SelectProfileRequestDto req)
+    {
+        var result = await _auth.SelectProfileAsync(HttpContext.RequireUserId(), req.ProfileId);
+        return Ok(result);
     }
 }

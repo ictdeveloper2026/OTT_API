@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Integration tests that run against REAL SQL Server + Redis via Testcontainers (Docker required).
+    Intentionally NOT part of OTT.sln so the offline unit build stays green; CI restores and runs it
+    explicitly (see .github/workflows/ci-cd.yml, the integration-test job).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Testcontainers.MsSql" Version="3.10.0" />
+    <PackageReference Include="Testcontainers.Redis" Version="3.10.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.0" />
+    <PackageReference Include="StackExchange.Redis" Version="2.7.17" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OTT.Application\OTT.Application.csproj" />
+    <ProjectReference Include="..\OTT.Infrastructure\OTT.Infrastructure.csproj" />
+    <ProjectReference Include="..\OTT.Domain\OTT.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

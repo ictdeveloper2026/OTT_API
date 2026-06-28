@@ -12,9 +12,13 @@ using OTT.API.Middleware;
 using OTT.Application.Services;
 using OTT.Infrastructure.Data;
 using OTT.Infrastructure.Services;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Serilog;
 using StackExchange.Redis;
 using System.Text;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -30,7 +34,7 @@ builder.Host.UseSerilog();
 // ── Database ──────────────────────────────────────────────────────────────────
 var connStr = builder.Configuration.GetConnectionString("DefaultConnection")!;
 builder.Services.AddDbContext<OttDbContext>(opts =>
-    opts.UseMySql(connStr, ServerVersion.AutoDetect(connStr),
+    opts.UseSqlServer(connStr,
         o => o.EnableRetryOnFailure(3).CommandTimeout(30)));
 
 // ── Redis ─────────────────────────────────────────────────────────────────────
@@ -38,13 +42,33 @@ var redisConn = builder.Configuration.GetConnectionString("Redis")!;
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 {
     var options = ConfigurationOptions.Parse(redisConn);
-    options.AbortOnConnectFail = false; // don't crash at startup if Redis is down; keep retrying
+    options.AbortOnConnectFail = false; // don't crash at startup if Redis is down
+    // Fail fast when Redis isn't running so cached endpoints (e.g. /api/plans) fall
+    // through to the database in ~1s instead of hanging on connect/sync timeouts.
+    options.ConnectTimeout = 800;
+    options.SyncTimeout = 800;
+    options.ConnectRetry = 0;
     return ConnectionMultiplexer.Connect(options);
 });
 builder.Services.AddSingleton<IRedisCacheService, RedisCacheService>();
 
 // ── JWT Auth ──────────────────────────────────────────────────────────────────
 var jwtSecret = builder.Configuration["Jwt:Secret"]!;
+
+// Fail fast on a missing / weak / placeholder signing key. Allowed (with a warning)
+// in Development only so local runs work; refuses to start in any other environment.
+var jwtSecretIsWeak = string.IsNullOrWhiteSpace(jwtSecret)
+    || jwtSecret.Length < 32
+    || jwtSecret.Contains("CHANGE", StringComparison.OrdinalIgnoreCase)
+    || jwtSecret.Contains("${");
+if (jwtSecretIsWeak)
+{
+    if (builder.Environment.IsDevelopment())
+        Log.Warning("Jwt:Secret is weak/placeholder — acceptable in Development only. Configure a strong 64+ char secret before deploying.");
+    else
+        throw new InvalidOperationException(
+            "Jwt:Secret is missing, too short, or a placeholder. Configure a strong 64+ char secret via environment variables or a secret store before running outside Development.");
+}
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(opts =>
     {
@@ -73,28 +97,110 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
+// ── Rate Limiting ─────────────────────────────────────────────────────────────
+// Protects against brute force / credential stuffing / OTP guessing / email bombing.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // Strict per-IP window for auth endpoints (login, OTP, refresh, forgot-password).
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+
+    // A generous per-IP safety net for the whole API.
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 300,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+});
+
+// ── Response compression ──────────────────────────────────────────────────────
+// Brotli/gzip on catalog JSON — large list payloads shrink ~70-80% over the wire.
+builder.Services.AddResponseCompression(opts =>
+{
+    opts.EnableForHttps = true;
+    opts.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+    opts.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+    opts.MimeTypes = Microsoft.AspNetCore.ResponseCompression.ResponseCompressionDefaults.MimeTypes
+        .Concat(new[] { "application/json", "application/problem+json" });
+});
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProviderOptions>(
+    o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(
+    o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
+
+// ── Output caching (.NET 8) ───────────────────────────────────────────────────
+// Anonymous catalog GETs are cached server-side per tenant for a short TTL. The default
+// policy already skips requests with an Authorization header / Set-Cookie response, so
+// per-user responses are never cached. The "catalog" policy varies by tenant + query.
+builder.Services.AddOutputCache(opts =>
+{
+    opts.AddPolicy("catalog", b => b
+        .Expire(TimeSpan.FromSeconds(60))
+        .SetVaryByHeader("X-Tenant-ID", "Host")
+        .SetVaryByQuery("*"));
+});
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
+// Set Cors:Origins to restrict to known front-ends. Accepts either a JSON array
+// (Cors:Origins:0, :1 …) or a single comma/semicolon-separated string so it can be
+// supplied from one deploy env var (Cors__Origins="https://app.example.com,https://www.example.com").
+// In Development (only) it stays permissive so the web client / Swagger keep working.
+// In Production with no origins configured we DO NOT reflect arbitrary origins with
+// credentials — that would let any site make authenticated calls. Cross-origin is
+// blocked instead (same-origin still works); set Cors:Origins to allow your front-end.
+var corsOrigins = (builder.Configuration.GetSection("Cors:Origins").Get<string[]>()
+        ?? builder.Configuration["Cors:Origins"]?.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    ?.Where(o => !string.IsNullOrWhiteSpace(o)).ToArray() ?? Array.Empty<string>();
 builder.Services.AddCors(opts => opts.AddPolicy("AllowAll", policy =>
-    policy.AllowAnyHeader().AllowAnyMethod().AllowCredentials().SetIsOriginAllowed(_ => true)));
+{
+    if (corsOrigins.Length > 0)
+        policy.WithOrigins(corsOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials();
+    else if (builder.Environment.IsDevelopment())
+        policy.AllowAnyHeader().AllowAnyMethod().AllowCredentials().SetIsOriginAllowed(_ => true);
+    // else (Production, no origins): leave the policy empty → cross-origin requests are blocked.
+}));
 
 // ── SignalR ───────────────────────────────────────────────────────────────────
 builder.Services.AddSignalR(opts =>
 {
     opts.EnableDetailedErrors = builder.Environment.IsDevelopment();
     opts.MaximumReceiveMessageSize = 32 * 1024;
-});
+}).AddStackExchangeRedis(redisConn); // backplane so hubs work across multiple instances
 
 // ── Hangfire ──────────────────────────────────────────────────────────────────
 builder.Services.AddHangfire(cfg => cfg
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
-    .UseStorage(new Hangfire.MySql.MySqlStorage(connStr, new Hangfire.MySql.MySqlStorageOptions
+    .UseSqlServerStorage(connStr, new Hangfire.SqlServer.SqlServerStorageOptions
     {
-        TablesPrefix = "Hangfire_",
-        QueuePollInterval = TimeSpan.FromSeconds(5)
-    })));
-builder.Services.AddHangfireServer(opts => opts.WorkerCount = 4);
+        SchemaName = "HangFire",
+        QueuePollInterval = TimeSpan.FromSeconds(5),
+        PrepareSchemaIfNecessary = true
+    }));
+// Queues this API instance processes. By default it handles both so a single-host deploy still
+// transcodes; set Hangfire:Queues="default" once a dedicated OTT.Worker is running so heavy
+// transcoding is drained out-of-process.
+var hangfireQueues = builder.Configuration.GetSection("Hangfire:Queues").Get<string[]>()
+    ?? new[] { OTT.Application.Services.JobQueues.Default, OTT.Application.Services.JobQueues.Transcoding };
+builder.Services.AddHangfireServer(opts =>
+{
+    opts.WorkerCount = 4;
+    opts.Queues = hangfireQueues;
+});
 
 // ── AWS S3 / S3-compatible storage ─────────────────────────────────────────────
 // Set AWS:S3:ServiceUrl to point at any S3-compatible provider (MinIO, Wasabi,
@@ -131,26 +237,75 @@ builder.Services.AddSingleton<IAmazonS3>(_ =>
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IContentService, ContentService>();
+builder.Services.AddScoped<IEntitlementService, EntitlementService>();
+builder.Services.AddScoped<IStreamSessionService, StreamSessionService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<IVideoService, VideoService>();
 builder.Services.AddScoped<ILiveStreamService, LiveStreamService>();
+builder.Services.AddScoped<IOutboxService, OutboxService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
+builder.Services.AddScoped<ISmsService, TwilioSmsService>();
+builder.Services.AddSingleton<IFeatureFlagService, FeatureFlagService>();
+builder.Services.AddScoped<IGdprService, GdprService>();
 builder.Services.AddScoped<IS3StorageService, S3StorageService>();
 builder.Services.AddScoped<ICloudFrontCdnService, CloudFrontCdnService>();
 // Admin-configurable, hot-reloadable storage (DB-backed, falls back to appsettings)
 builder.Services.AddSingleton<IStorageService, DynamicStorageService>();
 // Admin-configurable, hot-reloadable per-tenant settings (payments, email, social, feature flags)
 builder.Services.AddSingleton<IDynamicSettingsService, DynamicSettingsService>();
+// IPTV channel sync (iptv-org)
+builder.Services.AddScoped<IIptvSyncService, IptvSyncService>();
 builder.Services.AddSingleton<IHubService, HubService>();
+builder.Services.AddScoped<IVideoJobQueue, HangfireVideoJobQueue>();
 builder.Services.AddTransient<TranscodingJob>();
+builder.Services.AddTransient<WriteBehindFlushJob>();
+builder.Services.AddTransient<OutboxDispatchJob>();
 builder.Services.AddTransient<SubscriptionRenewalJob>();
 builder.Services.AddTransient<AnalyticsJob>();
 builder.Services.AddTransient<CleanupJob>();
 
+// ── OpenTelemetry (traces + metrics) ──────────────────────────────────────────
+// Exports via OTLP only when OpenTelemetry:OtlpEndpoint is configured (e.g. a collector
+// or Grafana/Tempo). Instrumentation is always collected; without an endpoint it's a no-op.
+var otlpEndpoint = builder.Configuration["OpenTelemetry:OtlpEndpoint"];
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService(serviceName: "ott-api"))
+    .WithTracing(t =>
+    {
+        t.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation();
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+            t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+    })
+    .WithMetrics(m =>
+    {
+        m.AddAspNetCoreInstrumentation().AddHttpClientInstrumentation().AddRuntimeInstrumentation();
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+            m.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+    });
+
 // ── Health Checks ─────────────────────────────────────────────────────────────
 builder.Services.AddHealthChecks()
-    .AddMySql(connStr, name: "mysql")
-    .AddRedis(redisConn, name: "redis");
+    .AddSqlServer(connStr, name: "sqlserver", tags: new[] { "ready" })
+    .AddRedis(redisConn, name: "redis", tags: new[] { "ready" });
+
+// ── API Versioning ────────────────────────────────────────────────────────────
+// Non-breaking: existing /api/... routes keep working because v1.0 is assumed when the
+// client sends no version. Clients may opt in via the `api-version` query string or the
+// `X-Api-Version` header; responses advertise supported versions. URL-segment versioning
+// (/api/v{version}/…) can be layered on per controller later without another rewrite.
+builder.Services.AddApiVersioning(o =>
+{
+    o.DefaultApiVersion = new Asp.Versioning.ApiVersion(1, 0);
+    o.AssumeDefaultVersionWhenUnspecified = true;
+    o.ReportApiVersions = true;
+    o.ApiVersionReader = Asp.Versioning.ApiVersionReader.Combine(
+        new Asp.Versioning.QueryStringApiVersionReader("api-version"),
+        new Asp.Versioning.HeaderApiVersionReader("X-Api-Version"));
+}).AddApiExplorer(o =>
+{
+    o.GroupNameFormat = "'v'VVV";
+    o.SubstituteApiVersionInUrl = true;
+});
 
 // ── Swagger ───────────────────────────────────────────────────────────────────
 builder.Services.AddEndpointsApiExplorer();
@@ -174,16 +329,66 @@ builder.Services.AddSwaggerGen(opts =>
     });
 });
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(o =>
+    {
+        // EF entities returned raw can form Tenant<->children navigation cycles
+        // (TenantMiddleware tracks the Tenant). Ignore cycles instead of throwing.
+        o.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
+        o.JsonSerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
+    });
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient();
+// Apply retry + timeout + circuit breaker to every factory-created HttpClient so a slow
+// payment/social/IAP/live gateway can't stall request threads or cascade failures.
+builder.Services.AddTransient<OTT.API.Http.ResilienceHandler>();
+builder.Services.ConfigureHttpClientDefaults(b => b.AddHttpMessageHandler<OTT.API.Http.ResilienceHandler>());
+
+// ── Firebase (push notifications) ──────────────────────────────────────────────
+// NotificationService sends via FirebaseMessaging.DefaultInstance, which requires an
+// initialized FirebaseApp. Without this, every push call throws. Disabled gracefully
+// when credentials aren't present (local dev).
+var firebaseCredsPath = builder.Configuration["Firebase:CredentialsPath"];
+if (!string.IsNullOrWhiteSpace(firebaseCredsPath) && File.Exists(firebaseCredsPath))
+{
+    if (FirebaseAdmin.FirebaseApp.DefaultInstance == null)
+        FirebaseAdmin.FirebaseApp.Create(new FirebaseAdmin.AppOptions
+        {
+            Credential = Google.Apis.Auth.OAuth2.GoogleCredential.FromFile(firebaseCredsPath)
+        });
+    Log.Information("Firebase Admin initialized — push notifications enabled");
+}
+else
+{
+    Log.Warning("Firebase credentials not found (Firebase:CredentialsPath='{Path}'); push notifications disabled", firebaseCredsPath);
+}
 
 // ── Build App ─────────────────────────────────────────────────────────────────
 var app = builder.Build();
 
+app.UseResponseCompression();
 app.UseMiddleware<ExceptionMiddleware>();
-app.UseMiddleware<RequestLoggingMiddleware>();
+// Structured request logging (method, path, status, elapsed) enriched with trace + tenant.
+app.UseSerilogRequestLogging(opts =>
+{
+    opts.EnrichDiagnosticContext = (diag, ctx) =>
+    {
+        diag.Set("TraceId", ctx.TraceIdentifier);
+        if (ctx.Items.TryGetValue("TenantId", out var t) && t is not null)
+            diag.Set("TenantId", t.ToString());
+    };
+});
+
+// Baseline security headers on every response.
+app.Use(async (ctx, next) =>
+{
+    var h = ctx.Response.Headers;
+    h["X-Content-Type-Options"] = "nosniff";
+    h["X-Frame-Options"] = "DENY";
+    h["Referrer-Policy"] = "no-referrer";
+    await next();
+});
 
 if (app.Environment.IsDevelopment())
 {
@@ -192,17 +397,31 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowAll");
+app.UseRateLimiter();
 app.UseStaticFiles(); // serves wwwroot (incl. /uploads for the local storage provider)
-app.UseHttpsRedirection();
+app.UseOutputCache();
+// ETag / conditional-GET for catalog JSON (runs after static files, so large file
+// downloads are already served and never buffered here).
+app.UseMiddleware<ETagMiddleware>();
+// clients (and trips up self-signed dev certs). Keep the redirect for production only.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseMiddleware<TenantMiddleware>();
+app.UseMiddleware<AuditMiddleware>(); // records admin mutations (after auth + tenant resolution)
 
 app.MapControllers();
 app.MapHub<WatchPartyHub>("/hubs/watchparty");
 app.MapHub<LiveChatHub>("/hubs/livechat");
 app.MapHub<NotificationHub>("/hubs/notifications");
-app.MapHealthChecks("/health");
+// Liveness = process is up (no dependency checks). Readiness = dependencies reachable.
+app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = c => c.Tags.Contains("ready") });
+app.MapHealthChecks("/health"); // legacy aggregate
 app.MapGet("/", () => Results.Ok(new { status = "OTT Platform API", version = "1.0.0", timestamp = DateTime.UtcNow }));
 
 if (app.Configuration.GetValue<bool>("Hangfire:Dashboard"))
@@ -222,13 +441,23 @@ using (var scope = app.Services.CreateScope())
         var db = scope.ServiceProvider.GetRequiredService<OttDbContext>();
         await db.Database.MigrateAsync();
         Log.Information("Database migrations applied");
+
+        await DbSeeder.SeedAsync(db, builder.Configuration);
+        Log.Information("Database seeded (default tenant, branding, admin, plan)");
     }
     catch (Exception ex)
     {
-        Log.Warning(ex, "Database migration skipped: {Message}", ex.Message);
+        Log.Warning(ex, "Database migration/seed skipped: {Message}", ex.Message);
     }
 }
 
-HangfireScheduler.ConfigureRecurringJobs();
+try
+{
+    HangfireScheduler.ConfigureRecurringJobs();
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Recurring job scheduling skipped: {Message}", ex.Message);
+}
 Log.Information("OTT Platform API started on {Env}", app.Environment.EnvironmentName);
 await app.RunAsync();

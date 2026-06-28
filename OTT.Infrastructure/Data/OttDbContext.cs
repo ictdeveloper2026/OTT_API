@@ -45,6 +45,9 @@ public class OttDbContext : DbContext
     public DbSet<CreatorApplication> CreatorApplications => Set<CreatorApplication>();
     public DbSet<ParentalControl> ParentalControls => Set<ParentalControl>();
     public DbSet<StorageConfiguration> StorageConfigurations => Set<StorageConfiguration>();
+    public DbSet<IptvChannel> IptvChannels => Set<IptvChannel>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -59,7 +62,7 @@ public class OttDbContext : DbContext
             e.Property(x => x.Slug).HasMaxLength(100).IsRequired();
             e.Property(x => x.Domain).HasMaxLength(255);
             e.Property(x => x.Plan).HasMaxLength(50).HasDefaultValue("basic");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // BrandingConfig
@@ -82,7 +85,7 @@ public class OttDbContext : DbContext
             e.Property(x => x.Email).HasMaxLength(255).IsRequired();
             e.Property(x => x.Role).HasMaxLength(50).HasDefaultValue("viewer");
             e.Property(x => x.AuthProvider).HasMaxLength(50).HasDefaultValue("local");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // UserProfile
@@ -107,6 +110,9 @@ public class OttDbContext : DbContext
         {
             e.HasKey(x => x.Id);
             e.HasOne(x => x.Tenant).WithMany(t => t.Contents).HasForeignKey(x => x.TenantId);
+            // Hot read paths filter by tenant+status and sort by trending/views.
+            e.HasIndex(x => new { x.TenantId, x.Status });
+            e.HasIndex(x => new { x.TenantId, x.IsTrending, x.ViewCount });
             e.Property(x => x.Title).HasMaxLength(500).IsRequired();
             e.Property(x => x.Type).HasMaxLength(50).IsRequired();
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("draft");
@@ -114,7 +120,7 @@ public class OttDbContext : DbContext
             e.Property(x => x.AgeRating).HasMaxLength(20).HasDefaultValue("PG");
             e.Property(x => x.AverageRating).HasPrecision(3, 2);
             e.Property(x => x.Price).HasPrecision(10, 2);
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // Season
@@ -207,7 +213,7 @@ public class OttDbContext : DbContext
             e.Property(x => x.Title).HasMaxLength(500).IsRequired();
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("offline");
             e.Property(x => x.StreamKey).HasMaxLength(200);
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // SubscriptionPlan
@@ -227,6 +233,8 @@ public class OttDbContext : DbContext
             e.HasKey(x => x.Id);
             e.HasOne(x => x.User).WithMany(u => u.Subscriptions).HasForeignKey(x => x.UserId);
             e.HasOne(x => x.Plan).WithMany().HasForeignKey(x => x.PlanId);
+            // Active-subscription lookups (entitlement checks, renewals).
+            e.HasIndex(x => new { x.UserId, x.Status, x.EndDate });
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("active");
             e.Property(x => x.PaymentGateway).HasMaxLength(50);
         });
@@ -236,11 +244,14 @@ public class OttDbContext : DbContext
         {
             e.HasKey(x => x.Id);
             e.HasOne(x => x.User).WithMany(u => u.Payments).HasForeignKey(x => x.UserId);
+            // Revenue dashboards + idempotency lookups by gateway payment id.
+            e.HasIndex(x => new { x.TenantId, x.Status, x.CreatedAt });
+            e.HasIndex(x => x.GatewayPaymentId);
             e.Property(x => x.Gateway).HasMaxLength(50).IsRequired();
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("pending");
             e.Property(x => x.Amount).HasPrecision(10, 2);
             e.Property(x => x.Currency).HasMaxLength(10).HasDefaultValue("INR");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // PromoCode
@@ -259,6 +270,8 @@ public class OttDbContext : DbContext
             e.HasKey(x => x.Id);
             e.HasOne(x => x.UserProfile).WithMany().HasForeignKey(x => x.ProfileId);
             e.HasIndex(x => new { x.ProfileId, x.ContentId });
+            // Continue-watching orders by most-recently-watched.
+            e.HasIndex(x => new { x.ProfileId, x.LastWatchedAt });
         });
 
         // Watchlist
@@ -281,7 +294,7 @@ public class OttDbContext : DbContext
             e.HasIndex(x => x.Code).IsUnique();
             e.Property(x => x.Code).HasMaxLength(20).IsRequired();
             e.Property(x => x.Status).HasMaxLength(50).HasDefaultValue("active");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // WatchPartyMember
@@ -297,7 +310,7 @@ public class OttDbContext : DbContext
             e.HasOne(x => x.User).WithMany(u => u.Notifications).HasForeignKey(x => x.UserId);
             e.Property(x => x.Title).HasMaxLength(500).IsRequired();
             e.Property(x => x.Type).HasMaxLength(50).HasDefaultValue("info");
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // DeviceToken
@@ -324,7 +337,7 @@ public class OttDbContext : DbContext
             e.HasIndex(x => x.EventType);
             e.HasIndex(x => x.CreatedAt);
             e.Property(x => x.EventType).HasMaxLength(100).IsRequired();
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
         // ContentAnalytics
@@ -342,10 +355,41 @@ public class OttDbContext : DbContext
             e.Property(x => x.MaxRating).HasMaxLength(20).HasDefaultValue("PG");
         });
 
+        // AuditLog
+        modelBuilder.Entity<AuditLog>(e =>
+        {
+            e.HasKey(x => x.Id);
+            // Newest-first queries scoped per tenant (the admin audit screen).
+            e.HasIndex(x => new { x.TenantId, x.CreatedAt });
+            e.Property(x => x.Action).HasMaxLength(10).IsRequired();
+            e.Property(x => x.Path).HasMaxLength(512).IsRequired();
+            e.Property(x => x.ActorEmail).HasMaxLength(256);
+            e.Property(x => x.IpAddress).HasMaxLength(64);
+            e.Property(x => x.UserAgent).HasMaxLength(512);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+        });
+
+        // OutboxMessage
+        modelBuilder.Entity<OutboxMessage>(e =>
+        {
+            e.HasKey(x => x.Id);
+            // The dispatch job polls due pending messages: (Status, NextAttemptAt).
+            e.HasIndex(x => new { x.Status, x.NextAttemptAt });
+            e.Property(x => x.Channel).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasDefaultValue("pending");
+            e.Property(x => x.LastError).HasMaxLength(2000);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+        });
+
         // Soft delete filter
         modelBuilder.Entity<Content>().HasQueryFilter(x => !x.IsDeleted);
         modelBuilder.Entity<User>().HasQueryFilter(x => !x.IsDeleted);
         modelBuilder.Entity<LiveStream>().HasQueryFilter(x => !x.IsDeleted);
+
+        // SQL Server (unlike MySQL) rejects multiple cascade paths / cycles (error 1785).
+        // Disable cascade delete globally; deletes are handled explicitly in services.
+        foreach (var fk in modelBuilder.Model.GetEntityTypes().SelectMany(e => e.GetForeignKeys()))
+            fk.DeleteBehavior = DeleteBehavior.Restrict;
     }
 
     public override int SaveChanges()

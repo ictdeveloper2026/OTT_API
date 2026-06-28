@@ -1,0 +1,36 @@
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+
+# Copy solution and project files (all projects, so the .sln restores cleanly)
+COPY *.sln ./
+COPY OTT.API/*.csproj ./OTT.API/
+COPY OTT.Application/*.csproj ./OTT.Application/
+COPY OTT.Domain/*.csproj ./OTT.Domain/
+COPY OTT.Infrastructure/*.csproj ./OTT.Infrastructure/
+COPY OTT.Worker/*.csproj ./OTT.Worker/
+COPY OTT.Tests/*.csproj ./OTT.Tests/
+
+RUN dotnet restore OTT.Worker/OTT.Worker.csproj
+
+COPY . .
+RUN dotnet publish OTT.Worker/OTT.Worker.csproj -c Release -o /app/publish --no-restore
+
+# ── Runtime stage ─────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+WORKDIR /app
+
+# FFmpeg is required for transcoding
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /app/keys /tmp/ott_transcode
+
+COPY --from=build /app/publish .
+
+# No HTTP surface — liveness is "the process is running".
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD pgrep -f OTT.Worker || exit 1
+
+ENTRYPOINT ["dotnet", "OTT.Worker.dll"]

@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using OTT.Application.DTOs;
@@ -14,18 +15,24 @@ public interface IContentService
     Task<PagedResultDto<ContentListItemDto>> SearchAsync(SearchRequestDto request, Guid tenantId);
     Task<PagedResultDto<ContentListItemDto>> GetByGenreAsync(Guid genreId, Guid tenantId, int page, int pageSize);
     Task<StreamUrlsDto> GetStreamUrlsAsync(Guid contentId, Guid tenantId, Guid? episodeId = null);
-    Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, Guid? episodeId = null);
+    Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, int durationSeconds, Guid? episodeId = null);
     Task<bool> AddToWatchlistAsync(Guid profileId, Guid contentId);
     Task<bool> RemoveFromWatchlistAsync(Guid profileId, Guid contentId);
     Task<bool> RateContentAsync(Guid profileId, Guid contentId, decimal rating);
     Task<List<ContentListItemDto>> GetContinueWatchingAsync(Guid profileId);
     Task<List<ContentListItemDto>> GetWatchlistAsync(Guid profileId, Guid tenantId);
     Task<List<ContentListItemDto>> GetRecommendationsAsync(Guid profileId, Guid tenantId);
+    Task<List<ContentListItemDto>> GetFeaturedAsync(Guid tenantId);
+    Task<PagedResultDto<ContentListItemDto>> GetTrendingAsync(Guid tenantId, int page, int pageSize);
+    Task<PagedResultDto<ContentListItemDto>> GetNewReleasesAsync(Guid tenantId, int page, int pageSize);
+    Task<List<ContentListItemDto>> GetRelatedAsync(Guid contentId, Guid tenantId);
+    Task<List<SeasonDto>> GetSeriesEpisodesAsync(Guid contentId, Guid tenantId, int? season);
+    Task<List<ContentListItemDto>> GetWatchHistoryAsync(Guid profileId);
     // Admin
     Task<ContentDetailDto> CreateContentAsync(CreateContentDto dto, Guid tenantId);
-    Task<ContentDetailDto> UpdateContentAsync(Guid contentId, CreateContentDto dto);
-    Task<bool> DeleteContentAsync(Guid contentId);
-    Task<bool> PublishContentAsync(Guid contentId);
+    Task<ContentDetailDto> UpdateContentAsync(Guid contentId, Guid tenantId, CreateContentDto dto);
+    Task<bool> DeleteContentAsync(Guid contentId, Guid tenantId);
+    Task<bool> PublishContentAsync(Guid contentId, Guid tenantId);
     Task<PagedResultDto<ContentListItemDto>> GetAdminContentAsync(Guid tenantId, int page, int pageSize, string? search = null, string? type = null);
 }
 
@@ -46,9 +53,19 @@ public class ContentService : IContentService
 
     public async Task<HomePageDto> GetHomePageAsync(Guid tenantId, Guid? profileId = null)
     {
-        var cacheKey = $"homepage:{tenantId}:{profileId}";
-        var cached = await _cache.GetAsync<HomePageDto>(cacheKey);
-        if (cached != null) return cached;
+        // Cache the tenant-shared SHELL under a versioned key (one entry per tenant, not per
+        // profile — avoids 150k-entry key explosion). Continue-watching is per-profile and must
+        // be live, so it's fetched separately below and never cached.
+        // Default "0" so it never collides with the first INCR (which yields 1) on invalidation.
+        var version = await _cache.GetStringAsync(HomepageVersionKey(tenantId)) ?? "0";
+        var cacheKey = $"homepage:{tenantId}:v{version}";
+
+        var shell = await _cache.GetAsync<HomePageDto>(cacheKey);
+        if (shell != null)
+        {
+            shell.ContinueWatching = await GetContinueWatchingShellAsync(profileId);
+            return shell;
+        }
 
         var branding = await _db.BrandingConfigs.FirstOrDefaultAsync(b => b.TenantId == tenantId);
         var banners = await _db.Banners
@@ -57,6 +74,7 @@ public class ContentService : IContentService
             .ToListAsync();
 
         var rows = await _db.ContentRows
+            .AsNoTracking()
             .Include(r => r.Items)
             .Where(r => r.TenantId == tenantId && r.IsActive)
             .OrderBy(r => r.SortOrder)
@@ -72,42 +90,57 @@ public class ContentService : IContentService
             .Distinct().ToList();
 
         var contents = await _db.Contents
+            .AsNoTracking()
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => contentIds.Contains(c.Id) && c.Status == "published")
             .ToDictionaryAsync(c => c.Id);
-
-        List<ContentListItemDto> continueWatching = [];
-        if (profileId.HasValue)
-        {
-            var history = await _db.WatchHistories
-                .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
-                .Where(w => w.ProfileId == profileId && !w.IsCompleted && w.PositionSeconds > 30)
-                .OrderByDescending(w => w.LastWatchedAt)
-                .Take(10)
-                .ToListAsync();
-            continueWatching = history.Select(h => MapContentListItem(h.Content)).ToList();
-        }
 
         var dto = new HomePageDto
         {
             Branding = MapBranding(branding),
             Banners = banners.Select(b => MapBanner(b, contents)).ToList(),
             Rows = rows.Select(r => MapContentRow(r, contents)).ToList(),
-            ContinueWatching = continueWatching,
+            ContinueWatching = [], // shared shell holds none; filled per-profile after caching
             LiveNow = liveStreams.Select(MapLiveStreamList).ToList()
         };
 
         await _cache.SetAsync(cacheKey, dto, TimeSpan.FromMinutes(5));
+
+        // Attach the live, per-profile continue-watching to the response (not to the cached shell).
+        dto.ContinueWatching = await GetContinueWatchingShellAsync(profileId);
         return dto;
     }
 
+    // Per-profile continue-watching used by the homepage. Kept out of the shared homepage cache.
+    private async Task<List<ContentListItemDto>> GetContinueWatchingShellAsync(Guid? profileId)
+    {
+        if (!profileId.HasValue) return [];
+        var history = await _db.WatchHistories
+            .AsNoTracking()
+            .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
+            .Where(w => w.ProfileId == profileId && !w.IsCompleted && w.PositionSeconds > 30)
+            .OrderByDescending(w => w.LastWatchedAt)
+            .Take(10)
+            .ToListAsync();
+        return history.Select(h => MapContentListItem(h.Content)).ToList();
+    }
+
+    // Versioned-key invalidation: bump the tenant's homepage version so the next request rebuilds
+    // the shell. Old version keys fall out via their TTL — no full-keyspace Keys() scan.
+    private static string HomepageVersionKey(Guid tenantId) => $"homepage:ver:{tenantId}";
+    private Task InvalidateHomepageAsync(Guid tenantId) => _cache.IncrementAsync(HomepageVersionKey(tenantId));
+
     public async Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null)
     {
+        // AsSplitQuery: four collection includes in one query would otherwise produce a
+        // cartesian row explosion (seasons×episodes×genres×casts×tags).
         var content = await _db.Contents
+            .AsNoTracking()
             .Include(c => c.Seasons).ThenInclude(s => s.Episodes)
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Include(c => c.ContentCasts)
             .Include(c => c.ContentTags).ThenInclude(ct => ct.Tag)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId && c.Status == "published")
             ?? throw new KeyNotFoundException("Content not found");
 
@@ -177,17 +210,27 @@ public class ContentService : IContentService
         // Related content
         var genreIds = content.ContentGenres.Select(cg => cg.GenreId).ToList();
         dto.Related = await _db.Contents
-            .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => c.TenantId == tenantId && c.Id != contentId && c.Status == "published"
                 && c.ContentGenres.Any(cg => genreIds.Contains(cg.GenreId)))
             .OrderByDescending(c => c.ViewCount)
             .Take(12)
-            .Select(c => MapContentListItem(c))
+            .Select(ListItemProjection)
             .ToListAsync();
 
-        // Increment view count
-        content.ViewCount++;
-        await _db.SaveChangesAsync();
+        // Increment view count via a write-behind buffer — no SQL write on this hot read path.
+        // A recurring job (WriteBehindFlushJob) folds these into Contents.ViewCount.
+        await _cache.HashIncrementAsync("views:pending", contentId.ToString());
+
+        // Emit a granular content_view event into the append-only analytics buffer. The flush
+        // job batch-inserts these into AnalyticsEvents, which AnalyticsJob turns into UniqueViewers.
+        await _cache.ListPushAsync("analytics:pending", System.Text.Json.JsonSerializer.Serialize(new AnalyticsEventBuffer
+        {
+            TenantId = tenantId,
+            ViewerId = profileId,
+            ContentId = contentId,
+            EventType = "content_view",
+            CreatedAt = DateTime.UtcNow
+        }));
 
         return dto;
     }
@@ -195,6 +238,7 @@ public class ContentService : IContentService
     public async Task<PagedResultDto<ContentListItemDto>> SearchAsync(SearchRequestDto request, Guid tenantId)
     {
         var query = _db.Contents
+            .AsNoTracking()
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => c.TenantId == tenantId && c.Status == "published");
 
@@ -235,7 +279,7 @@ public class ContentService : IContentService
         var items = await query
             .Skip((request.Page - 1) * request.PageSize)
             .Take(request.PageSize)
-            .Select(c => MapContentListItem(c))
+            .Select(ListItemProjection)
             .ToListAsync();
 
         return new PagedResultDto<ContentListItemDto>
@@ -250,7 +294,7 @@ public class ContentService : IContentService
     public async Task<PagedResultDto<ContentListItemDto>> GetByGenreAsync(Guid genreId, Guid tenantId, int page, int pageSize)
     {
         var query = _db.Contents
-            .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
+            .AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.Status == "published"
                 && c.ContentGenres.Any(cg => cg.GenreId == genreId));
 
@@ -260,17 +304,112 @@ public class ContentService : IContentService
             .ThenByDescending(c => c.CreatedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(c => MapContentListItem(c))
+            .Select(ListItemProjection)
             .ToListAsync();
 
         return new PagedResultDto<ContentListItemDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
     }
 
+    public async Task<List<ContentListItemDto>> GetFeaturedAsync(Guid tenantId)
+    {
+        return await _db.Contents
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Status == "published" && c.IsFeatured)
+            .OrderByDescending(c => c.CreatedAt)
+            .Take(20)
+            .Select(ListItemProjection)
+            .ToListAsync();
+    }
+
+    public async Task<PagedResultDto<ContentListItemDto>> GetTrendingAsync(Guid tenantId, int page, int pageSize)
+    {
+        var query = _db.Contents
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Status == "published");
+
+        var total = await query.CountAsync();
+        var items = await query
+            .OrderByDescending(c => c.IsTrending).ThenByDescending(c => c.ViewCount)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(ListItemProjection)
+            .ToListAsync();
+
+        return new PagedResultDto<ContentListItemDto>
+        {
+            Items = items,
+            TotalCount = total, Page = page, PageSize = pageSize
+        };
+    }
+
+    public async Task<PagedResultDto<ContentListItemDto>> GetNewReleasesAsync(Guid tenantId, int page, int pageSize)
+    {
+        var query = _db.Contents
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Status == "published");
+
+        var total = await query.CountAsync();
+        var items = await query
+            .OrderByDescending(c => c.PublishedAt).ThenByDescending(c => c.CreatedAt)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(ListItemProjection)
+            .ToListAsync();
+
+        return new PagedResultDto<ContentListItemDto>
+        {
+            Items = items,
+            TotalCount = total, Page = page, PageSize = pageSize
+        };
+    }
+
+    public async Task<List<ContentListItemDto>> GetRelatedAsync(Guid contentId, Guid tenantId)
+    {
+        var genreIds = await _db.ContentGenres
+            .Where(cg => cg.ContentId == contentId)
+            .Select(cg => cg.GenreId)
+            .ToListAsync();
+
+        return await _db.Contents
+            .AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Status == "published" && c.Id != contentId
+                && c.ContentGenres.Any(cg => genreIds.Contains(cg.GenreId)))
+            .OrderByDescending(c => c.AverageRating)
+            .Take(12)
+            .Select(ListItemProjection)
+            .ToListAsync();
+    }
+
+    public async Task<List<SeasonDto>> GetSeriesEpisodesAsync(Guid contentId, Guid tenantId, int? season)
+    {
+        var detail = await GetContentDetailAsync(contentId, tenantId);
+        var seasons = detail.Seasons;
+        return season.HasValue
+            ? seasons.Where(s => s.SeasonNumber == season.Value).ToList()
+            : seasons;
+    }
+
+    public async Task<List<ContentListItemDto>> GetWatchHistoryAsync(Guid profileId)
+    {
+        var contents = await _db.WatchHistories
+            .AsNoTracking()
+            .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
+            .Where(w => w.ProfileId == profileId)
+            .OrderByDescending(w => w.LastWatchedAt)
+            .Select(w => w.Content)
+            .ToListAsync();
+        return contents.Select(MapContentListItem).ToList();
+    }
+
     public async Task<StreamUrlsDto> GetStreamUrlsAsync(Guid contentId, Guid tenantId, Guid? episodeId = null)
     {
+        // Tenant-scoped: never resolve content/episodes belonging to another tenant.
+        var content = await _db.Contents
+            .FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId)
+            ?? throw new KeyNotFoundException("Content not found");
+
         if (episodeId.HasValue)
         {
-            var episode = await _db.Episodes.FindAsync(episodeId)
+            var episode = await _db.Episodes
+                .FirstOrDefaultAsync(e => e.Id == episodeId && e.ContentId == contentId)
                 ?? throw new KeyNotFoundException("Episode not found");
 
             var asset = await _db.VideoAssets
@@ -279,46 +418,18 @@ public class ContentService : IContentService
             return BuildStreamUrls(asset, episode.ExternalVideoUrl, episode.YoutubeId, episode.VimeoId);
         }
 
-        var content = await _db.Contents.FindAsync(contentId)
-            ?? throw new KeyNotFoundException("Content not found");
-
         return await GetStreamUrlsInternalAsync(content);
     }
 
-    public async Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, Guid? episodeId = null)
+    public async Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, int durationSeconds, Guid? episodeId = null)
     {
-        var history = await _db.WatchHistories
-            .FirstOrDefaultAsync(w => w.ProfileId == profileId && w.ContentId == contentId && w.EpisodeId == episodeId);
-
-        if (history == null)
-        {
-            history = new WatchHistory
-            {
-                ProfileId = profileId,
-                ContentId = contentId,
-                EpisodeId = episodeId,
-                PositionSeconds = positionSeconds,
-                LastWatchedAt = DateTime.UtcNow
-            };
-            _db.WatchHistories.Add(history);
-        }
-        else
-        {
-            history.PositionSeconds = positionSeconds;
-            history.LastWatchedAt = DateTime.UtcNow;
-        }
-
-        // Get duration for completion check
-        int? duration = null;
-        if (episodeId.HasValue)
-            duration = (await _db.Episodes.FindAsync(episodeId))?.DurationSeconds;
-        else
-            duration = (await _db.Contents.FindAsync(contentId))?.DurationSeconds;
-
-        if (duration.HasValue && duration > 0)
-            history.IsCompleted = positionSeconds >= duration.Value * 0.9;
-
-        await _db.SaveChangesAsync();
+        // Write-behind: at ~3k writes/sec under load this must NOT hit SQL on every call.
+        // Buffer the latest position per (profile, content, episode) in Redis; WriteBehindFlushJob
+        // persists it to WatchHistories every minute. Duration comes from the client payload, so
+        // there is no DB read on this path either.
+        var field = $"{profileId}|{contentId}|{episodeId?.ToString() ?? "none"}";
+        var value = $"{positionSeconds}:{durationSeconds}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        await _cache.HashSetAsync("wh:pending", field, value);
     }
 
     public async Task<bool> AddToWatchlistAsync(Guid profileId, Guid contentId)
@@ -347,20 +458,28 @@ public class ContentService : IContentService
             _db.UserRatings.Add(new UserRating { ProfileId = profileId, ContentId = contentId, Rating = rating, CreatedAt = DateTime.UtcNow });
         else
             existing.Rating = rating;
+        // Persist the rating first so the AVG() below reflects this change.
+        await _db.SaveChangesAsync();
 
-        // Update average
-        var allRatings = await _db.UserRatings.Where(r => r.ContentId == contentId).Select(r => r.Rating).ToListAsync();
+        // Recompute the average in SQL (AVG) instead of materializing every rating row —
+        // a single aggregate query that stays cheap on popular titles.
+        var average = await _db.UserRatings
+            .Where(r => r.ContentId == contentId)
+            .AverageAsync(r => (decimal?)r.Rating) ?? rating;
+
         var content = await _db.Contents.FindAsync(contentId);
         if (content != null)
-            content.AverageRating = allRatings.Count == 0 ? rating : allRatings.Average();
-
-        await _db.SaveChangesAsync();
+        {
+            content.AverageRating = average;
+            await _db.SaveChangesAsync();
+        }
         return true;
     }
 
     public async Task<List<ContentListItemDto>> GetContinueWatchingAsync(Guid profileId)
     {
         return await _db.WatchHistories
+            .AsNoTracking()
             .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(w => w.ProfileId == profileId && !w.IsCompleted && w.PositionSeconds > 30)
             .OrderByDescending(w => w.LastWatchedAt)
@@ -372,6 +491,7 @@ public class ContentService : IContentService
     public async Task<List<ContentListItemDto>> GetWatchlistAsync(Guid profileId, Guid tenantId)
     {
         return await _db.Watchlists
+            .AsNoTracking()
             .Include(w => w.Content).ThenInclude(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(w => w.ProfileId == profileId && w.Content.TenantId == tenantId)
             .OrderByDescending(w => w.AddedAt)
@@ -401,7 +521,7 @@ public class ContentService : IContentService
                 .Where(c => c.TenantId == tenantId && c.Status == "published" && c.IsTrending)
                 .OrderByDescending(c => c.ViewCount)
                 .Take(20)
-                .Select(c => MapContentListItem(c))
+                .Select(ListItemProjection)
                 .ToListAsync();
         }
 
@@ -412,7 +532,7 @@ public class ContentService : IContentService
                 && c.ContentGenres.Any(cg => watchedGenres.Contains(cg.GenreId)))
             .OrderByDescending(c => c.AverageRating)
             .Take(20)
-            .Select(c => MapContentListItem(c))
+            .Select(ListItemProjection)
             .ToListAsync();
     }
 
@@ -460,14 +580,14 @@ public class ContentService : IContentService
         }
 
         await _db.SaveChangesAsync();
-        await _cache.RemoveByPatternAsync($"homepage:{tenantId}:*");
+        await InvalidateHomepageAsync(tenantId);
 
         return await GetContentDetailAsync(content.Id, tenantId);
     }
 
-    public async Task<ContentDetailDto> UpdateContentAsync(Guid contentId, CreateContentDto dto)
+    public async Task<ContentDetailDto> UpdateContentAsync(Guid contentId, Guid tenantId, CreateContentDto dto)
     {
-        var content = await _db.Contents.FindAsync(contentId)
+        var content = await _db.Contents.FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId)
             ?? throw new KeyNotFoundException("Content not found");
 
         content.Title = dto.Title;
@@ -494,28 +614,28 @@ public class ContentService : IContentService
             _db.ContentGenres.Add(new ContentGenre { ContentId = contentId, GenreId = genreId });
 
         await _db.SaveChangesAsync();
-        await _cache.RemoveByPatternAsync($"homepage:{content.TenantId}:*");
+        await InvalidateHomepageAsync(content.TenantId);
 
         return await GetContentDetailAsync(contentId, content.TenantId);
     }
 
-    public async Task<bool> DeleteContentAsync(Guid contentId)
+    public async Task<bool> DeleteContentAsync(Guid contentId, Guid tenantId)
     {
-        var content = await _db.Contents.FindAsync(contentId);
+        var content = await _db.Contents.FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId);
         if (content == null) return false;
         content.IsDeleted = true;
         await _db.SaveChangesAsync();
         return true;
     }
 
-    public async Task<bool> PublishContentAsync(Guid contentId)
+    public async Task<bool> PublishContentAsync(Guid contentId, Guid tenantId)
     {
-        var content = await _db.Contents.FindAsync(contentId);
+        var content = await _db.Contents.FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId);
         if (content == null) return false;
         content.Status = "published";
         content.PublishedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
-        await _cache.RemoveByPatternAsync($"homepage:{content.TenantId}:*");
+        await InvalidateHomepageAsync(content.TenantId);
         return true;
     }
 
@@ -537,7 +657,7 @@ public class ContentService : IContentService
             .OrderByDescending(c => c.CreatedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(c => MapContentListItem(c))
+            .Select(ListItemProjection)
             .ToListAsync();
 
         return new PagedResultDto<ContentListItemDto> { Items = items, TotalCount = total, Page = page, PageSize = pageSize };
@@ -605,6 +725,32 @@ public class ContentService : IContentService
         return dto;
     }
 
+    // SQL projection: list endpoints use this with .Select(...) so EF builds a lean SELECT of just
+    // the list-item columns (+ genre names) instead of materializing full Content entities then
+    // mapping in memory. Must stay translatable — no method calls EF can't convert.
+    private static readonly Expression<Func<Content, ContentListItemDto>> ListItemProjection = c => new ContentListItemDto
+    {
+        Id = c.Id,
+        Title = c.Title,
+        Description = c.Description,
+        Type = c.Type,
+        ThumbnailUrl = c.ThumbnailUrl,
+        PosterUrl = c.PosterUrl,
+        BannerUrl = c.BannerUrl,
+        ReleaseYear = c.ReleaseYear,
+        AgeRating = c.AgeRating,
+        AverageRating = c.AverageRating,
+        DurationSeconds = c.DurationSeconds,
+        MonetizationModel = c.MonetizationModel,
+        Price = c.Price,
+        IsFeatured = c.IsFeatured,
+        IsTrending = c.IsTrending,
+        IsNew = c.CreatedAt > DateTime.UtcNow.AddDays(-30),
+        Genres = c.ContentGenres.Select(cg => cg.Genre.Name).ToList()
+    };
+
+    // In-memory mapper retained for paths that already hold a loaded Content (homepage rows/banners,
+    // watch-history navigation). Null-safe on genres for partially-loaded entities.
     private static ContentListItemDto MapContentListItem(Content c) => new()
     {
         Id = c.Id,

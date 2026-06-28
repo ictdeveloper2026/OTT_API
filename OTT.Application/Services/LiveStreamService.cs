@@ -30,6 +30,7 @@ public class LiveStreamService : ILiveStreamService
     private readonly OttDbContext _db;
     private readonly IRedisCacheService _cache;
     private readonly IConfiguration _config;
+    private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<LiveStreamService> _logger;
 
     private readonly string _antMediaUrl;
@@ -39,11 +40,13 @@ public class LiveStreamService : ILiveStreamService
         OttDbContext db,
         IRedisCacheService cache,
         IConfiguration config,
+        IHttpClientFactory httpFactory,
         ILogger<LiveStreamService> logger)
     {
         _db = db;
         _cache = cache;
         _config = config;
+        _httpFactory = httpFactory;
         _logger = logger;
         _antMediaUrl = config["AntMedia:ServerUrl"] ?? "https://live.yourdomain.com:5443";
         _antMediaApp = config["AntMedia:AppName"] ?? "live";
@@ -163,8 +166,8 @@ public class LiveStreamService : ILiveStreamService
         // Initialize viewer count in Redis
         await _cache.SetStringAsync($"live_viewers:{streamId}", "0", TimeSpan.FromHours(24));
 
-        // Invalidate homepage cache
-        await _cache.RemoveByPatternAsync($"homepage:{tenantId}:*");
+        // Invalidate homepage cache (versioned-key bump — see ContentService)
+        await _cache.IncrementAsync($"homepage:ver:{tenantId}");
 
         _logger.LogInformation("Stream {StreamId} started", streamId);
         return true;
@@ -185,7 +188,7 @@ public class LiveStreamService : ILiveStreamService
 
         await _db.SaveChangesAsync();
         await _cache.RemoveAsync($"live_viewers:{streamId}");
-        await _cache.RemoveByPatternAsync($"homepage:{tenantId}:*");
+        await _cache.IncrementAsync($"homepage:ver:{tenantId}"); // versioned-key invalidation (see ContentService)
 
         // Stop in Ant Media if applicable
         if (stream.StreamProvider == "antmedia" && !string.IsNullOrEmpty(stream.AntMediaStreamId))
@@ -279,7 +282,7 @@ public class LiveStreamService : ILiveStreamService
     {
         try
         {
-            using var client = new HttpClient();
+            var client = _httpFactory.CreateClient();
             var body = JsonSerializer.Serialize(new
             {
                 streamId = streamKey,
@@ -312,7 +315,7 @@ public class LiveStreamService : ILiveStreamService
     {
         try
         {
-            using var client = new HttpClient();
+            var client = _httpFactory.CreateClient();
             await client.DeleteAsync($"{_antMediaUrl}/{_antMediaApp}/rest/v2/broadcasts/{streamId}");
         }
         catch (Exception ex)

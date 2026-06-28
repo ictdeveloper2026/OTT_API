@@ -27,6 +27,11 @@ public static class SettingKeys
     public const string EmailFrom = "email.fromEmail";
     public const string EmailFromName = "email.fromName";
 
+    // SMS (Twilio)
+    public const string TwilioAccountSid = "sms.twilio.accountSid";
+    public const string TwilioAuthToken = "sms.twilio.authToken";
+    public const string TwilioFromNumber = "sms.twilio.fromNumber";
+
     // Social login (client IDs are public)
     public const string GoogleClientId = "social.google.clientId";
     public const string FacebookAppId = "social.facebook.appId";

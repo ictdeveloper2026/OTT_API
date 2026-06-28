@@ -1,17 +1,44 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace OTT.Application.DTOs;
 
 // ── Auth DTOs ─────────────────────────────────────────────────────────────────
+// [ApiController] auto-returns 400 ProblemDetails when these annotations fail.
 
-public record LoginRequestDto(string Email, string Password, string? DeviceId);
-public record RegisterRequestDto(string Email, string Password, string FirstName, string LastName, string? Phone);
-public record VerifyOtpDto(string Email, string Otp);
-public record SocialLoginDto(string Provider, string Token, string? DeviceId);
-public record ResetPasswordDto(string Token, string NewPassword);
-public record ChangePasswordDto(string CurrentPassword, string NewPassword);
-public record RefreshTokenRequestDto(string RefreshToken);
-public record ForgotPasswordRequestDto(string Email);
-public record LogoutRequestDto(string RefreshToken);
-public record SendOtpRequestDto(string Email);
+public record LoginRequestDto(
+    [Required, EmailAddress] string Email,
+    [Required] string Password,
+    string? DeviceId);
+
+public record RegisterRequestDto(
+    [Required, EmailAddress] string Email,
+    [Required, MinLength(8), MaxLength(128)] string Password,
+    [Required, MaxLength(100)] string FirstName,
+    [MaxLength(100)] string LastName,
+    [Phone] string? Phone);
+
+public record VerifyOtpDto(
+    [Required, EmailAddress] string Email,
+    [Required, RegularExpression(@"^\d{6}$", ErrorMessage = "OTP must be 6 digits")] string Otp);
+
+public record SocialLoginDto(
+    [Required] string Provider,
+    [Required] string Token,
+    string? DeviceId);
+
+public record ResetPasswordDto(
+    [Required] string Token,
+    [Required, MinLength(8), MaxLength(128)] string NewPassword);
+
+public record ChangePasswordDto(
+    [Required] string CurrentPassword,
+    [Required, MinLength(8), MaxLength(128)] string NewPassword);
+
+public record RefreshTokenRequestDto([Required] string RefreshToken);
+public record ForgotPasswordRequestDto([Required, EmailAddress] string Email);
+public record LogoutRequestDto([Required] string RefreshToken);
+public record SendOtpRequestDto([Required, EmailAddress] string Email);
+public record SelectProfileRequestDto([Required] Guid ProfileId);
 
 public class AuthResponseDto
 {
@@ -240,8 +267,9 @@ public class SubscriptionPlanDto
 
 public class CreateOrderDto
 {
-    public Guid PlanId { get; set; }
-    public string? PromoCode { get; set; }
+    [Required] public Guid PlanId { get; set; }
+    [MaxLength(100)] public string? PromoCode { get; set; }
+    [Required, RegularExpression("^(razorpay|stripe|paypal)$", ErrorMessage = "Unsupported gateway")]
     public string Gateway { get; set; } = "razorpay";
 }
 
@@ -257,9 +285,10 @@ public class OrderResponseDto
 
 public class VerifyPaymentDto
 {
-    public string OrderId { get; set; } = "";
-    public string PaymentId { get; set; } = "";
-    public string? Signature { get; set; }
+    [Required, MaxLength(200)] public string OrderId { get; set; } = "";
+    [Required, MaxLength(200)] public string PaymentId { get; set; } = "";
+    [MaxLength(512)] public string? Signature { get; set; }
+    [Required, RegularExpression("^(razorpay|stripe|paypal)$", ErrorMessage = "Unsupported gateway")]
     public string Gateway { get; set; } = "razorpay";
 }
 
@@ -374,18 +403,20 @@ public class UserGrowthDto
 
 public class CreateContentDto
 {
-    public string Title { get; set; } = "";
-    public string? Description { get; set; }
+    [Required, MaxLength(300)] public string Title { get; set; } = "";
+    [MaxLength(5000)] public string? Description { get; set; }
+    [Required, RegularExpression("^(movie|series|documentary|short)$", ErrorMessage = "Invalid content type")]
     public string Type { get; set; } = "movie";
     public string? ThumbnailUrl { get; set; }
     public string? PosterUrl { get; set; }
     public string? BannerUrl { get; set; }
     public string? TrailerUrl { get; set; }
-    public int? ReleaseYear { get; set; }
-    public string? Language { get; set; }
-    public string? AgeRating { get; set; }
+    [Range(1900, 2100)] public int? ReleaseYear { get; set; }
+    [MaxLength(50)] public string? Language { get; set; }
+    [MaxLength(20)] public string? AgeRating { get; set; }
+    [RegularExpression("^(free|avod|svod|tvod)$", ErrorMessage = "Invalid monetization model")]
     public string MonetizationModel { get; set; } = "svod";
-    public decimal? Price { get; set; }
+    [Range(0, 1000000)] public decimal? Price { get; set; }
     public string? DirectorName { get; set; }
     public string? Cast { get; set; }
     public List<Guid> GenreIds { get; set; } = [];
@@ -417,10 +448,10 @@ public class UpdateBrandingDto
 
 public class CreateLiveStreamDto
 {
-    public string Title { get; set; } = "";
-    public string? Description { get; set; }
+    [Required, MaxLength(300)] public string Title { get; set; } = "";
+    [MaxLength(5000)] public string? Description { get; set; }
     public string? ThumbnailUrl { get; set; }
-    public string StreamProvider { get; set; } = "antmedia";
+    [Required, MaxLength(50)] public string StreamProvider { get; set; } = "antmedia";
     public string? YoutubeStreamId { get; set; }
     public string? VimeoStreamId { get; set; }
     public string? Category { get; set; }
@@ -434,6 +465,7 @@ public class CreateLiveStreamDto
 
 public class UpdateStorageConfigDto
 {
+    [Required, RegularExpression("^(s3|minio|wasabi|spaces|r2|local)$", ErrorMessage = "Unsupported storage provider")]
     public string Provider { get; set; } = "s3"; // s3 | minio | wasabi | spaces | r2 | local
     public string? BucketName { get; set; }
     public string? Region { get; set; }
