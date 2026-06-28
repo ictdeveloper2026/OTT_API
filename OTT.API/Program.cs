@@ -288,6 +288,25 @@ builder.Services.AddHealthChecks()
     .AddSqlServer(connStr, name: "sqlserver", tags: new[] { "ready" })
     .AddRedis(redisConn, name: "redis", tags: new[] { "ready" });
 
+// ── API Versioning ────────────────────────────────────────────────────────────
+// Non-breaking: existing /api/... routes keep working because v1.0 is assumed when the
+// client sends no version. Clients may opt in via the `api-version` query string or the
+// `X-Api-Version` header; responses advertise supported versions. URL-segment versioning
+// (/api/v{version}/…) can be layered on per controller later without another rewrite.
+builder.Services.AddApiVersioning(o =>
+{
+    o.DefaultApiVersion = new Asp.Versioning.ApiVersion(1, 0);
+    o.AssumeDefaultVersionWhenUnspecified = true;
+    o.ReportApiVersions = true;
+    o.ApiVersionReader = Asp.Versioning.ApiVersionReader.Combine(
+        new Asp.Versioning.QueryStringApiVersionReader("api-version"),
+        new Asp.Versioning.HeaderApiVersionReader("X-Api-Version"));
+}).AddApiExplorer(o =>
+{
+    o.GroupNameFormat = "'v'VVV";
+    o.SubstituteApiVersionInUrl = true;
+});
+
 // ── Swagger ───────────────────────────────────────────────────────────────────
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(opts =>
