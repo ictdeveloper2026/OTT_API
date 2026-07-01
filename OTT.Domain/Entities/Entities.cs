@@ -122,6 +122,7 @@ namespace OTT.Domain.Entities
         public Guid TenantId { get; set; }
         public string Title { get; set; } = "";
         public string? Description { get; set; }
+        public string? ShortDescription { get; set; }
         public string Type { get; set; } = "movie"; // movie | series | short | documentary | live
         public string? PosterUrl { get; set; }
         public string? ThumbnailUrl { get; set; }
@@ -265,6 +266,7 @@ namespace OTT.Domain.Entities
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public Content? Content { get; set; }
         public ICollection<Subtitle> Subtitles { get; set; } = new List<Subtitle>();
+        public ICollection<AudioTrack> AudioTracks { get; set; } = new List<AudioTrack>();
     }
 
     public class Subtitle
@@ -277,6 +279,23 @@ namespace OTT.Domain.Entities
         public string Label { get; set; } = "";
         public string FileUrl { get; set; } = "";
         public string Format { get; set; } = "vtt";
+        public VideoAsset? VideoAsset { get; set; }
+    }
+
+    // A selectable audio (language) track inside a video asset. For HLS the
+    // renditions live in the manifest; these rows carry the human label/language
+    // so the player can show "Hindi / English" instead of "Audio 1 / Audio 2",
+    // and TrackIndex maps to the manifest's audio rendition order.
+    public class AudioTrack
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public Guid? ContentId { get; set; }
+        public Guid? AssetId { get; set; }
+        public string Language { get; set; } = "";
+        public string? LanguageCode { get; set; }
+        public string Label { get; set; } = "";
+        public int TrackIndex { get; set; }
+        public bool IsDefault { get; set; }
         public VideoAsset? VideoAsset { get; set; }
     }
 
@@ -658,5 +677,68 @@ namespace OTT.Domain.Entities
         public string? IpAddress { get; set; }
         public string? UserAgent { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    }
+
+    // ── Community: content suggestions/requests + polls ────────────────────────
+    // Users submit suggestions and upvote them; admins promote hot suggestions
+    // into polls that the community votes on.
+    public class Suggestion
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public Guid TenantId { get; set; }
+        public Guid CreatedByUserId { get; set; }
+        public string Title { get; set; } = "";
+        public string? Description { get; set; }
+        public string Status { get; set; } = "open"; // open | planned | added | rejected | promoted
+        public int UpvoteCount { get; set; }
+        public Guid? LinkedContentId { get; set; }    // set when a suggestion is fulfilled
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime? UpdatedAt { get; set; }
+        public ICollection<SuggestionVote> Votes { get; set; } = new List<SuggestionVote>();
+    }
+
+    public class SuggestionVote
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public Guid SuggestionId { get; set; }
+        public Guid UserId { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public Suggestion? Suggestion { get; set; }
+    }
+
+    public class Poll
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public Guid TenantId { get; set; }
+        public Guid CreatedByUserId { get; set; }
+        public string Question { get; set; } = "";
+        public string? Description { get; set; }
+        public string Status { get; set; } = "open"; // open | closed
+        public Guid? SourceSuggestionId { get; set; } // set when promoted from a suggestion
+        public DateTime? EndsAt { get; set; }         // auto-closes past this instant
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public ICollection<PollOption> Options { get; set; } = new List<PollOption>();
+        public ICollection<PollVote> Votes { get; set; } = new List<PollVote>();
+    }
+
+    public class PollOption
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public Guid PollId { get; set; }
+        public string Text { get; set; } = "";
+        public Guid? LinkedContentId { get; set; }
+        public int VoteCount { get; set; }
+        public int SortOrder { get; set; }
+        public Poll? Poll { get; set; }
+    }
+
+    public class PollVote
+    {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public Guid PollId { get; set; }
+        public Guid PollOptionId { get; set; }
+        public Guid UserId { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public Poll? Poll { get; set; }
     }
 }

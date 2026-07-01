@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using OTT.API.Middleware;
 using OTT.Application.DTOs;
 using OTT.Application.Services;
+using OTT.Domain.Entities;
 using OTT.Infrastructure.Data;
 using OTT.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
@@ -285,10 +286,72 @@ public class ProfilesController : ControllerBase
         var valid = BCrypt.Net.BCrypt.Verify(dto.Pin, profile.PinHash);
         return Ok(ApiResponse<object>.Ok(new { valid }));
     }
+
+    // ── Parental controls (per current profile) ──
+    [HttpGet("parental-control")]
+    public async Task<IActionResult> GetParentalControl()
+    {
+        var profile = await ResolveCurrentProfileAsync();
+        if (profile == null) return NotFound(ApiResponse<object>.Fail("No profile found"));
+        var pc = await _db.ParentalControls.FirstOrDefaultAsync(x => x.ProfileId == profile.Id);
+        return Ok(ApiResponse<object>.Ok(new
+        {
+            profileId = profile.Id,
+            maturityLevel = profile.MaturityLevel,
+            maxRating = pc?.MaxRating ?? "PG",
+            requirePin = pc?.RequirePin ?? (profile.PinHash != null),
+            isPinSet = profile.PinHash != null,
+            blockViolence = pc?.BlockViolence ?? false,
+            blockLanguage = pc?.BlockLanguage ?? false,
+            blockSexualContent = pc?.BlockSexualContent ?? false,
+        }));
+    }
+
+    [HttpPut("parental-control")]
+    public async Task<IActionResult> SaveParentalControl([FromBody] SaveParentalControlDto dto)
+    {
+        var profile = await ResolveCurrentProfileAsync();
+        if (profile == null) return NotFound(ApiResponse<object>.Fail("No profile found"));
+
+        if (!string.IsNullOrWhiteSpace(dto.MaturityLevel)) profile.MaturityLevel = dto.MaturityLevel!;
+        if (!string.IsNullOrWhiteSpace(dto.Pin) && dto.Pin!.Length >= 4)
+            profile.PinHash = BCrypt.Net.BCrypt.HashPassword(dto.Pin);
+        else if (!dto.RequirePin)
+            profile.PinHash = null; // turning the lock off clears the PIN
+
+        var pc = await _db.ParentalControls.FirstOrDefaultAsync(x => x.ProfileId == profile.Id);
+        if (pc == null) { pc = new ParentalControl { ProfileId = profile.Id }; _db.ParentalControls.Add(pc); }
+        pc.MaxRating = dto.MaxRating ?? pc.MaxRating;
+        pc.RequirePin = dto.RequirePin;
+        pc.BlockViolence = dto.BlockViolence;
+        pc.BlockLanguage = dto.BlockLanguage;
+        pc.BlockSexualContent = dto.BlockSexualContent;
+        pc.UpdatedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Saved" });
+    }
+
+    // Current profile from the profile-scoped JWT claim, else the user's default profile.
+    private async Task<UserProfile?> ResolveCurrentProfileAsync()
+    {
+        var userId = HttpContext.RequireUserId();
+        var pid = HttpContext.GetProfileId();
+        if (pid.HasValue)
+        {
+            var p = await _db.UserProfiles.FirstOrDefaultAsync(x => x.Id == pid.Value && x.UserId == userId);
+            if (p != null) return p;
+        }
+        return await _db.UserProfiles.Where(x => x.UserId == userId)
+            .OrderByDescending(x => x.IsDefault).ThenBy(x => x.CreatedAt).FirstOrDefaultAsync();
+    }
 }
 
 public record CreateProfileDto(string? Name, string? AvatarUrl, string? MaturityLevel, string? Language, string? Pin);
 public record VerifyPinDto(string Pin);
+public record SaveParentalControlDto(
+    string? MaturityLevel, string? MaxRating, bool RequirePin,
+    bool BlockViolence, bool BlockLanguage, bool BlockSexualContent, string? Pin);
 
 // ── Upload Controller ─────────────────────────────────────────────────────────
 

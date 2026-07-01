@@ -17,6 +17,7 @@ public class OttDbContext : DbContext
     public DbSet<Episode> Episodes => Set<Episode>();
     public DbSet<VideoAsset> VideoAssets => Set<VideoAsset>();
     public DbSet<Subtitle> Subtitles => Set<Subtitle>();
+    public DbSet<AudioTrack> AudioTracks => Set<AudioTrack>();
     public DbSet<ContentCast> ContentCasts => Set<ContentCast>();
     public DbSet<Genre> Genres => Set<Genre>();
     public DbSet<ContentGenre> ContentGenres => Set<ContentGenre>();
@@ -47,6 +48,11 @@ public class OttDbContext : DbContext
     public DbSet<StorageConfiguration> StorageConfigurations => Set<StorageConfiguration>();
     public DbSet<IptvChannel> IptvChannels => Set<IptvChannel>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<Suggestion> Suggestions => Set<Suggestion>();
+    public DbSet<SuggestionVote> SuggestionVotes => Set<SuggestionVote>();
+    public DbSet<Poll> Polls => Set<Poll>();
+    public DbSet<PollOption> PollOptions => Set<PollOption>();
+    public DbSet<PollVote> PollVotes => Set<PollVote>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -110,6 +116,7 @@ public class OttDbContext : DbContext
         {
             e.HasKey(x => x.Id);
             e.HasOne(x => x.Tenant).WithMany(t => t.Contents).HasForeignKey(x => x.TenantId);
+            e.Property(x => x.ShortDescription).HasMaxLength(500);
             // Hot read paths filter by tenant+status and sort by trending/views.
             e.HasIndex(x => new { x.TenantId, x.Status });
             e.HasIndex(x => new { x.TenantId, x.IsTrending, x.ViewCount });
@@ -155,6 +162,19 @@ public class OttDbContext : DbContext
             e.HasKey(x => x.Id);
             e.Property(x => x.Language).HasMaxLength(10).IsRequired();
             e.Property(x => x.Label).HasMaxLength(100);
+        });
+
+        // AudioTrack
+        modelBuilder.Entity<AudioTrack>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Language).HasMaxLength(10).IsRequired();
+            e.Property(x => x.LanguageCode).HasMaxLength(10);
+            e.Property(x => x.Label).HasMaxLength(100);
+            e.HasOne(x => x.VideoAsset)
+                .WithMany(a => a.AudioTracks)
+                .HasForeignKey(x => x.AssetId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         // Genre
@@ -379,6 +399,42 @@ public class OttDbContext : DbContext
             e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasDefaultValue("pending");
             e.Property(x => x.LastError).HasMaxLength(2000);
             e.Property(x => x.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+        });
+
+        // Community: suggestions + polls
+        modelBuilder.Entity<Suggestion>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Title).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Description).HasMaxLength(2000);
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasDefaultValue("open");
+            e.HasIndex(x => new { x.TenantId, x.Status, x.UpvoteCount });
+        });
+        modelBuilder.Entity<SuggestionVote>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => new { x.SuggestionId, x.UserId }).IsUnique(); // one upvote per user
+            e.HasOne(x => x.Suggestion).WithMany(s => s.Votes).HasForeignKey(x => x.SuggestionId);
+        });
+        modelBuilder.Entity<Poll>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Question).HasMaxLength(300).IsRequired();
+            e.Property(x => x.Description).HasMaxLength(2000);
+            e.Property(x => x.Status).HasMaxLength(20).IsRequired().HasDefaultValue("open");
+            e.HasIndex(x => new { x.TenantId, x.Status });
+        });
+        modelBuilder.Entity<PollOption>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Text).HasMaxLength(300).IsRequired();
+            e.HasOne(x => x.Poll).WithMany(p => p.Options).HasForeignKey(x => x.PollId);
+        });
+        modelBuilder.Entity<PollVote>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => new { x.PollId, x.UserId }).IsUnique(); // one vote per poll
+            e.HasOne(x => x.Poll).WithMany(p => p.Votes).HasForeignKey(x => x.PollId);
         });
 
         // Soft delete filter

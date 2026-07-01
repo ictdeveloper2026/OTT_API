@@ -149,6 +149,7 @@ public class StreamUrlsDto
     public string? VimeoUrl { get; set; }
     public Dictionary<string, string> Qualities { get; set; } = [];
     public List<SubtitleDto> Subtitles { get; set; } = [];
+    public List<AudioTrackDto> AudioTracks { get; set; } = [];
     public string? DrmLicenseUrl { get; set; }
     public string StreamProvider { get; set; } = "hls";
 }
@@ -159,6 +160,14 @@ public class SubtitleDto
     public string Label { get; set; } = "";
     public string Url { get; set; } = "";
     public string Format { get; set; } = "vtt";
+}
+
+public class AudioTrackDto
+{
+    public string Language { get; set; } = "";
+    public string Label { get; set; } = "";
+    public int TrackIndex { get; set; }
+    public bool IsDefault { get; set; }
 }
 
 public class WatchProgressDto
@@ -262,6 +271,7 @@ public class SubscriptionPlanDto
     public bool AllowUhd { get; set; }
     public List<string> Features { get; set; } = [];
     public bool IsPopular { get; set; }
+    public bool IsActive { get; set; } = true;
     public string? RazorpayPlanId { get; set; }
 }
 
@@ -405,6 +415,7 @@ public class CreateContentDto
 {
     [Required, MaxLength(300)] public string Title { get; set; } = "";
     [MaxLength(5000)] public string? Description { get; set; }
+    [MaxLength(500)] public string? ShortDescription { get; set; }
     [Required, RegularExpression("^(movie|series|documentary|short)$", ErrorMessage = "Invalid content type")]
     public string Type { get; set; } = "movie";
     public string? ThumbnailUrl { get; set; }
@@ -539,4 +550,77 @@ public class TranscodeRequestDto
     public List<string> Qualities { get; set; } = ["1080p", "720p", "480p", "360p"];
     public bool GenerateThumbnails { get; set; } = true;
     public bool ExtractAudio { get; set; } = false;
+}
+
+// ── Community (suggestions + polls) ─────────────────────────────────────────────
+public class CreateSuggestionDto
+{
+    [Required, MaxLength(300)] public string Title { get; set; } = "";
+    [MaxLength(2000)] public string? Description { get; set; }
+}
+
+public class UpdateSuggestionStatusDto
+{
+    [Required, RegularExpression("^(open|planned|added|rejected|promoted)$", ErrorMessage = "Invalid status")]
+    public string Status { get; set; } = "open";
+    public Guid? LinkedContentId { get; set; }
+}
+
+public class CreatePollDto
+{
+    [Required, MaxLength(300)] public string Question { get; set; } = "";
+    [MaxLength(2000)] public string? Description { get; set; }
+    public DateTime? EndsAt { get; set; }
+    [MinLength(2, ErrorMessage = "A poll needs at least two options")]
+    public List<string> Options { get; set; } = [];
+    public Guid? SourceSuggestionId { get; set; }
+}
+
+public class UpdatePollDto
+{
+    [MaxLength(300)] public string? Question { get; set; }
+    [MaxLength(2000)] public string? Description { get; set; }
+    [RegularExpression("^(open|closed)$", ErrorMessage = "Status must be 'open' or 'closed'")]
+    public string? Status { get; set; }
+    public DateTime? EndsAt { get; set; }
+}
+
+public class CastVoteDto
+{
+    [Required] public Guid OptionId { get; set; }
+}
+
+public class SuggestionDto
+{
+    public Guid Id { get; set; }
+    public string Title { get; set; } = "";
+    public string? Description { get; set; }
+    public string Status { get; set; } = "open";
+    public int UpvoteCount { get; set; }
+    public bool HasVoted { get; set; }
+    public Guid? LinkedContentId { get; set; }
+    public Guid CreatedByUserId { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class PollOptionDto
+{
+    public Guid Id { get; set; }
+    public string Text { get; set; } = "";
+    public int VoteCount { get; set; }
+    public Guid? LinkedContentId { get; set; }
+    public int SortOrder { get; set; }
+}
+
+public class PollDto
+{
+    public Guid Id { get; set; }
+    public string Question { get; set; } = "";
+    public string? Description { get; set; }
+    public string Status { get; set; } = "open";
+    public DateTime? EndsAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public int TotalVotes { get; set; }
+    public Guid? MyOptionId { get; set; }   // the option the caller voted for, if any
+    public List<PollOptionDto> Options { get; set; } = [];
 }

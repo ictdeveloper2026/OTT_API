@@ -415,7 +415,9 @@ public class ContentService : IContentService
             var asset = await _db.VideoAssets
                 .FirstOrDefaultAsync(a => a.EpisodeId == episodeId && a.Status == "ready");
 
-            return BuildStreamUrls(asset, episode.ExternalVideoUrl, episode.YoutubeId, episode.VimeoId);
+            var epDto = BuildStreamUrls(asset, episode.ExternalVideoUrl, episode.YoutubeId, episode.VimeoId);
+            await PopulateTracksAsync(epDto, contentId);
+            return epDto;
         }
 
         return await GetStreamUrlsInternalAsync(content);
@@ -545,6 +547,7 @@ public class ContentService : IContentService
             TenantId = tenantId,
             Title = dto.Title,
             Description = dto.Description,
+            ShortDescription = dto.ShortDescription,
             Type = dto.Type,
             ThumbnailUrl = dto.ThumbnailUrl,
             PosterUrl = dto.PosterUrl,
@@ -592,6 +595,7 @@ public class ContentService : IContentService
 
         content.Title = dto.Title;
         content.Description = dto.Description;
+        content.ShortDescription = dto.ShortDescription ?? content.ShortDescription;
         content.ThumbnailUrl = dto.ThumbnailUrl ?? content.ThumbnailUrl;
         content.PosterUrl = dto.PosterUrl ?? content.PosterUrl;
         content.BannerUrl = dto.BannerUrl ?? content.BannerUrl;
@@ -668,10 +672,37 @@ public class ContentService : IContentService
     private async Task<StreamUrlsDto> GetStreamUrlsInternalAsync(Content content)
     {
         var asset = await _db.VideoAssets
-            .Include(a => a.Subtitles)
             .FirstOrDefaultAsync(a => a.ContentId == content.Id && a.EpisodeId == null && a.Status == "ready");
 
-        return BuildStreamUrls(asset, content.HlsUrl, content.YoutubeId, content.VimeoId);
+        var dto = BuildStreamUrls(asset, content.HlsUrl, content.YoutubeId, content.VimeoId);
+        await PopulateTracksAsync(dto, content.Id);
+        return dto;
+    }
+
+    // Subtitle/audio tracks are managed per title (by ContentId) so they apply to
+    // transcoded assets, external HLS URLs, and series episodes alike. Skipped for
+    // YouTube/Vimeo, which surface captions through their own players.
+    private async Task PopulateTracksAsync(StreamUrlsDto dto, Guid contentId)
+    {
+        if (dto.StreamProvider != "hls") return;
+
+        var subs = await _db.Subtitles.Where(s => s.ContentId == contentId).ToListAsync();
+        dto.Subtitles = subs.Select(s => new SubtitleDto
+        {
+            Language = s.LanguageCode ?? s.Language,
+            Label = string.IsNullOrEmpty(s.Label) ? s.Language : s.Label,
+            Url = _cdn.GetPublicUrl(s.FileUrl),
+            Format = s.Format ?? "vtt"
+        }).ToList();
+
+        var auds = await _db.AudioTracks.Where(a => a.ContentId == contentId).OrderBy(a => a.TrackIndex).ToListAsync();
+        dto.AudioTracks = auds.Select(a => new AudioTrackDto
+        {
+            Language = a.LanguageCode ?? a.Language,
+            Label = string.IsNullOrEmpty(a.Label) ? a.Language : a.Label,
+            TrackIndex = a.TrackIndex,
+            IsDefault = a.IsDefault
+        }).ToList();
     }
 
     private StreamUrlsDto BuildStreamUrls(VideoAsset? asset, string? hlsUrl, string? youtubeId, string? vimeoId)
@@ -705,13 +736,7 @@ public class ContentService : IContentService
                 { "480p", _cdn.GetSignedUrl($"transcoded/{asset.ContentId}/480p/playlist.m3u8") },
                 { "360p", _cdn.GetSignedUrl($"transcoded/{asset.ContentId}/360p/playlist.m3u8") }
             };
-            dto.Subtitles = asset.Subtitles?.Select(s => new SubtitleDto
-            {
-                Language = s.Language,
-                Label = s.Label ?? s.Language,
-                Url = _cdn.GetPublicUrl(s.FileUrl),
-                Format = s.Format ?? "vtt"
-            }).ToList() ?? [];
+            // Subtitles/audio are attached per title via PopulateTracksAsync.
             return dto;
         }
 

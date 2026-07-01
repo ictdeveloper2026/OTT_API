@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OTT.Infrastructure.Data;
 
@@ -11,9 +12,11 @@ using OTT.Infrastructure.Data;
 namespace OTT.Infrastructure.Migrations
 {
     [DbContext(typeof(OttDbContext))]
-    partial class OttDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260630181926_AddAudioTracks")]
+    partial class AddAudioTracks
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -399,10 +402,6 @@ namespace OTT.Infrastructure.Migrations
 
                     b.Property<int?>("ReleaseYear")
                         .HasColumnType("int");
-
-                    b.Property<string>("ShortDescription")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -1183,106 +1182,6 @@ namespace OTT.Infrastructure.Migrations
                     b.ToTable("Payments");
                 });
 
-            modelBuilder.Entity("OTT.Domain.Entities.Poll", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<Guid>("CreatedByUserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(2000)
-                        .HasColumnType("nvarchar(2000)");
-
-                    b.Property<DateTime?>("EndsAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Question")
-                        .IsRequired()
-                        .HasMaxLength(300)
-                        .HasColumnType("nvarchar(300)");
-
-                    b.Property<Guid?>("SourceSuggestionId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)")
-                        .HasDefaultValue("open");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "Status");
-
-                    b.ToTable("Polls");
-                });
-
-            modelBuilder.Entity("OTT.Domain.Entities.PollOption", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("LinkedContentId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid>("PollId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("SortOrder")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Text")
-                        .IsRequired()
-                        .HasMaxLength(300)
-                        .HasColumnType("nvarchar(300)");
-
-                    b.Property<int>("VoteCount")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("PollId");
-
-                    b.ToTable("PollOptions");
-                });
-
-            modelBuilder.Entity("OTT.Domain.Entities.PollVote", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<Guid>("PollId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid>("PollOptionId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("PollId", "UserId")
-                        .IsUnique();
-
-                    b.ToTable("PollVotes");
-                });
-
             modelBuilder.Entity("OTT.Domain.Entities.PromoCode", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1558,76 +1457,6 @@ namespace OTT.Infrastructure.Migrations
                     b.HasIndex("VideoAssetId");
 
                     b.ToTable("Subtitles");
-                });
-
-            modelBuilder.Entity("OTT.Domain.Entities.Suggestion", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<Guid>("CreatedByUserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(2000)
-                        .HasColumnType("nvarchar(2000)");
-
-                    b.Property<Guid?>("LinkedContentId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)")
-                        .HasDefaultValue("open");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("Title")
-                        .IsRequired()
-                        .HasMaxLength(300)
-                        .HasColumnType("nvarchar(300)");
-
-                    b.Property<DateTime?>("UpdatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("UpvoteCount")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "Status", "UpvoteCount");
-
-                    b.ToTable("Suggestions");
-                });
-
-            modelBuilder.Entity("OTT.Domain.Entities.SuggestionVote", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<Guid>("SuggestionId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SuggestionId", "UserId")
-                        .IsUnique();
-
-                    b.ToTable("SuggestionVotes");
                 });
 
             modelBuilder.Entity("OTT.Domain.Entities.Tag", b =>
@@ -2305,28 +2134,6 @@ namespace OTT.Infrastructure.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("OTT.Domain.Entities.PollOption", b =>
-                {
-                    b.HasOne("OTT.Domain.Entities.Poll", "Poll")
-                        .WithMany("Options")
-                        .HasForeignKey("PollId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Poll");
-                });
-
-            modelBuilder.Entity("OTT.Domain.Entities.PollVote", b =>
-                {
-                    b.HasOne("OTT.Domain.Entities.Poll", "Poll")
-                        .WithMany("Votes")
-                        .HasForeignKey("PollId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Poll");
-                });
-
             modelBuilder.Entity("OTT.Domain.Entities.RefreshToken", b =>
                 {
                     b.HasOne("OTT.Domain.Entities.User", "User")
@@ -2368,17 +2175,6 @@ namespace OTT.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("VideoAsset");
-                });
-
-            modelBuilder.Entity("OTT.Domain.Entities.SuggestionVote", b =>
-                {
-                    b.HasOne("OTT.Domain.Entities.Suggestion", "Suggestion")
-                        .WithMany("Votes")
-                        .HasForeignKey("SuggestionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Suggestion");
                 });
 
             modelBuilder.Entity("OTT.Domain.Entities.User", b =>
@@ -2516,21 +2312,9 @@ namespace OTT.Infrastructure.Migrations
                     b.Navigation("ContentGenres");
                 });
 
-            modelBuilder.Entity("OTT.Domain.Entities.Poll", b =>
-                {
-                    b.Navigation("Options");
-
-                    b.Navigation("Votes");
-                });
-
             modelBuilder.Entity("OTT.Domain.Entities.Season", b =>
                 {
                     b.Navigation("Episodes");
-                });
-
-            modelBuilder.Entity("OTT.Domain.Entities.Suggestion", b =>
-                {
-                    b.Navigation("Votes");
                 });
 
             modelBuilder.Entity("OTT.Domain.Entities.Tag", b =>

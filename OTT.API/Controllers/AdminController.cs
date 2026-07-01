@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OTT.API.Middleware;
@@ -7,6 +8,8 @@ using OTT.Application.Services;
 using OTT.Domain.Entities;
 using OTT.Infrastructure.Data;
 using OTT.Infrastructure.Services;
+using System.ComponentModel.DataAnnotations;
+using System.IO;
 using System.Text.Json;
 
 namespace OTT.API.Controllers;
@@ -29,6 +32,29 @@ public record UserStatusDto(
     [System.ComponentModel.DataAnnotations.RegularExpression("^(active|blocked)$", ErrorMessage = "Status must be 'active' or 'blocked'")] string Status); // active | blocked
 public record UpdateConfigValueDto(string? Value, bool IsPublic);
 
+// Multipart form for uploading a subtitle file against a title.
+public class AddSubtitleForm
+{
+    public IFormFile? File { get; set; }
+    [Required, MaxLength(10)] public string Language { get; set; } = ""; // e.g. en, hi, ta
+    [MaxLength(100)] public string? Label { get; set; }                  // e.g. "English (CC)"
+    [RegularExpression("^(vtt|srt)$", ErrorMessage = "Format must be 'vtt' or 'srt'")] public string? Format { get; set; }
+}
+
+// Multipart form for uploading a source video file (HLS transcode pipeline).
+public class SetVideoForm
+{
+    public IFormFile? File { get; set; }
+}
+
+// Declares an audio (language) track. For HLS the rendition lives in the manifest;
+// this carries the human label + manifest order for the player's audio menu.
+public record AddAudioTrackDto(
+    [Required, MaxLength(10)] string Language,
+    [MaxLength(100)] string? Label,
+    [Range(0, 64)] int TrackIndex,
+    bool IsDefault);
+
 [ApiController]
 [Route("api/admin")]
 [Authorize(Roles = "admin")]
@@ -39,11 +65,13 @@ public class AdminController : ControllerBase
     private readonly ILiveStreamService _live;
     private readonly IStorageService _storage;
     private readonly IDynamicSettingsService _settings;
+    private readonly IVideoService _video;
+    private readonly ICommunityService _community;
 
     public AdminController(OttDbContext db, IContentService content, ILiveStreamService live,
-        IStorageService storage, IDynamicSettingsService settings)
+        IStorageService storage, IDynamicSettingsService settings, IVideoService video, ICommunityService community)
     {
-        _db = db; _content = content; _live = live; _storage = storage; _settings = settings;
+        _db = db; _content = content; _live = live; _storage = storage; _settings = settings; _video = video; _community = community;
     }
 
     // ── Dashboard ──
@@ -83,6 +111,35 @@ public class AdminController : ControllerBase
             .Select(g => new RevenueChartDto { Label = g.Key.ToString("yyyy-MM-dd"), Amount = g.Sum(x => x.Amount) })
             .OrderBy(r => r.Label)
             .ToList();
+        return Ok(ApiResponse<object>.Ok(rows));
+    }
+
+    // Top content by lifetime views (tenant-scoped).
+    [HttpGet("analytics/top-content")]
+    public async Task<IActionResult> TopContent([FromQuery] int limit = 10)
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var top = await _db.Contents.AsNoTracking()
+            .Where(c => c.TenantId == tenantId)
+            .OrderByDescending(c => c.ViewCount)
+            .Take(Math.Clamp(limit, 1, 50))
+            .Select(c => new { c.Id, c.Title, c.ThumbnailUrl, Views = c.ViewCount, Rating = c.AverageRating ?? 0 })
+            .ToListAsync();
+        return Ok(ApiResponse<object>.Ok(top));
+    }
+
+    // Viewer distribution by country, from analytics events (tenant-scoped).
+    [HttpGet("analytics/regions")]
+    public async Task<IActionResult> Regions()
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var rows = await _db.AnalyticsEvents.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Country != null && e.Country != "")
+            .GroupBy(e => e.Country!)
+            .Select(g => new { Country = g.Key, Count = g.Count() })
+            .OrderByDescending(x => x.Count)
+            .Take(10)
+            .ToListAsync();
         return Ok(ApiResponse<object>.Ok(rows));
     }
 
@@ -175,6 +232,85 @@ public class AdminController : ControllerBase
         [FromQuery] string? q = null, [FromQuery] string? type = null)
         => Ok(ApiResponse<object>.Ok(await _content.GetAdminContentAsync(HttpContext.GetTenantId(), page, pageSize, q, type)));
 
+    // Single content for the admin editor — includes drafts (the public detail
+    // endpoint filters to published only), and returns genre ids for prefill.
+    [HttpGet("contents/{id:guid}")]
+    public async Task<IActionResult> GetContent(Guid id)
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var c = await _db.Contents.IgnoreQueryFilters()
+            .Include(x => x.ContentGenres)
+            .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId && !x.IsDeleted);
+        if (c == null) return NotFound(ApiResponse<object>.Fail("Content not found"));
+        return Ok(ApiResponse<object>.Ok(new
+        {
+            c.Id, c.Title, c.Description, c.ShortDescription, c.Type, c.MonetizationModel, c.AgeRating,
+            c.ReleaseYear, c.Status, c.ThumbnailUrl, c.PosterUrl, c.BannerUrl, c.TrailerUrl,
+            c.YoutubeId, c.VimeoId, c.HlsUrl, c.VideoSourceType, c.IsFeatured, c.IsTrending,
+            GenreIds = c.ContentGenres.Select(g => g.GenreId).ToList()
+        }));
+    }
+
+    // Upload a title image (thumbnail/poster/banner) and persist its URL on the
+    // content so it sticks immediately (the create/update DTO carries URLs, not files).
+    [HttpPost("contents/{id:guid}/image")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(15 * 1024 * 1024)]
+    public async Task<IActionResult> UploadContentImage(Guid id, IFormFile file, [FromForm] string type = "thumbnail")
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var content = await _db.Contents.FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId);
+        if (content == null) return NotFound(ApiResponse<object>.Fail("Content not found"));
+        if (file == null || file.Length == 0) return BadRequest(ApiResponse<object>.Fail("No file"));
+
+        var kind = type.ToLowerInvariant() switch { "poster" => "poster", "banner" => "banner", _ => "thumbnail" };
+        var key = $"content-images/{id}/{kind}{Path.GetExtension(file.FileName)}";
+        var url = await _storage.UploadPublicAsync(key, file.OpenReadStream(), file.ContentType);
+
+        switch (kind)
+        {
+            case "poster": content.PosterUrl = url; break;
+            case "banner": content.BannerUrl = url; break;
+            default: content.ThumbnailUrl = url; break;
+        }
+        await _db.SaveChangesAsync();
+        return Ok(ApiResponse<object>.Ok(new { url, type = kind }));
+    }
+
+    // Upload a source video file for a title, register the asset and kick off HLS
+    // transcoding. (YouTube/Vimeo don't need this — they're saved as content fields.)
+    [HttpPost("contents/{id:guid}/video")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(2L * 1024 * 1024 * 1024)] // 2 GB
+    public async Task<IActionResult> UploadContentVideo(Guid id, [FromForm] SetVideoForm form, CancellationToken ct)
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var content = await _db.Contents.FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId);
+        if (content == null) return NotFound(ApiResponse<object>.Fail("Content not found"));
+        if (form.File == null || form.File.Length == 0) return BadRequest(ApiResponse<object>.Fail("Video file is required"));
+
+        var key = $"uploads/{tenantId}/videos/{Guid.NewGuid():N}{Path.GetExtension(form.File.FileName)}";
+        await using (var stream = form.File.OpenReadStream())
+            await _storage.UploadAsync(stream, key, form.File.ContentType, ct);
+
+        var asset = new VideoAsset
+        {
+            ContentId = id,
+            OriginalFileName = form.File.FileName,
+            OriginalKey = key,
+            StorageProvider = "s3",
+            Status = "pending",
+            CreatedAt = DateTime.UtcNow
+        };
+        _db.VideoAssets.Add(asset);
+        content.VideoSourceType = "upload";
+        await _db.SaveChangesAsync(ct);
+
+        // Enqueue transcoding (drained by the worker host; requires the worker running).
+        await _video.StartTranscodingAsync(new TranscodeRequestDto { AssetId = asset.Id, SourceKey = key });
+        return Ok(ApiResponse<object>.Ok(new { assetId = asset.Id, status = "transcoding" }));
+    }
+
     [HttpPost("contents")]
     public async Task<IActionResult> CreateContent([FromBody] CreateContentDto dto)
         => Ok(ApiResponse<object>.Ok(await _content.CreateContentAsync(dto, HttpContext.GetTenantId())));
@@ -202,6 +338,106 @@ public class AdminController : ControllerBase
     {
         var result = await _storage.GetPresignedUploadUrlAsync($"raw/{id}/{Guid.NewGuid():N}.mp4", contentType, TimeSpan.FromHours(2));
         return Ok(new { uploadUrl = result.Url, key = result.Key, headers = result.Headers });
+    }
+
+    // ── Subtitle & Audio tracks (managed per title) ──
+    [HttpGet("contents/{id:guid}/tracks")]
+    public async Task<IActionResult> GetTracks(Guid id)
+    {
+        var tenantId = HttpContext.GetTenantId();
+        if (!await _db.Contents.AnyAsync(c => c.Id == id && c.TenantId == tenantId))
+            return NotFound(ApiResponse<object>.Fail("Content not found"));
+
+        var subs = await _db.Subtitles.Where(s => s.ContentId == id).ToListAsync();
+        var subtitles = subs.Select(s => new { s.Id, s.Language, s.LanguageCode, s.Label, s.Format, Url = _storage.GetPublicUrl(s.FileUrl) }).ToList();
+        var audioTracks = await _db.AudioTracks.Where(a => a.ContentId == id).OrderBy(a => a.TrackIndex)
+            .Select(a => new { a.Id, a.Language, a.LanguageCode, a.Label, a.TrackIndex, a.IsDefault }).ToListAsync();
+        return Ok(ApiResponse<object>.Ok(new { subtitles, audioTracks }));
+    }
+
+    [HttpPost("contents/{id:guid}/subtitles")]
+    [RequestSizeLimit(20 * 1024 * 1024)] // caption files are tiny; cap at 20 MB
+    public async Task<IActionResult> AddSubtitle(Guid id, [FromForm] AddSubtitleForm form, CancellationToken ct)
+    {
+        var tenantId = HttpContext.GetTenantId();
+        if (!await _db.Contents.AnyAsync(c => c.Id == id && c.TenantId == tenantId))
+            return NotFound(ApiResponse<object>.Fail("Content not found"));
+        if (form.File == null || form.File.Length == 0)
+            return BadRequest(ApiResponse<object>.Fail("Subtitle file is required"));
+
+        var ext = (form.Format ?? Path.GetExtension(form.File.FileName).TrimStart('.')).ToLowerInvariant();
+        if (string.IsNullOrEmpty(ext)) ext = "vtt";
+        if (ext != "vtt" && ext != "srt")
+            return BadRequest(ApiResponse<object>.Fail("Only .vtt or .srt subtitle files are supported"));
+
+        var key = $"subtitles/{id}/{Guid.NewGuid():N}.{ext}";
+        var contentType = ext == "srt" ? "application/x-subrip" : "text/vtt";
+        await using (var stream = form.File.OpenReadStream())
+            await _storage.UploadPublicAsync(key, stream, contentType, ct);
+
+        var asset = await _db.VideoAssets.FirstOrDefaultAsync(a => a.ContentId == id && a.EpisodeId == null);
+        var sub = new Subtitle
+        {
+            ContentId = id,
+            AssetId = asset?.Id,
+            Language = form.Language,
+            LanguageCode = form.Language,
+            Label = string.IsNullOrWhiteSpace(form.Label) ? form.Language : form.Label!,
+            FileUrl = key,
+            Format = ext
+        };
+        _db.Subtitles.Add(sub);
+        await _db.SaveChangesAsync(ct);
+        return Ok(ApiResponse<object>.Ok(new { sub.Id, sub.Language, sub.Label, sub.Format, Url = _storage.GetPublicUrl(key) }));
+    }
+
+    [HttpDelete("contents/{id:guid}/subtitles/{subtitleId:guid}")]
+    public async Task<IActionResult> DeleteSubtitle(Guid id, Guid subtitleId)
+    {
+        var tenantId = HttpContext.GetTenantId();
+        if (!await _db.Contents.AnyAsync(c => c.Id == id && c.TenantId == tenantId))
+            return NotFound(ApiResponse<object>.Fail("Content not found"));
+        var sub = await _db.Subtitles.FirstOrDefaultAsync(s => s.Id == subtitleId && s.ContentId == id);
+        if (sub == null) return NotFound(ApiResponse<object>.Fail("Subtitle not found"));
+        try { await _storage.DeleteAsync(sub.FileUrl); } catch { /* best-effort; row removal is the source of truth */ }
+        _db.Subtitles.Remove(sub);
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Deleted" });
+    }
+
+    [HttpPost("contents/{id:guid}/audio-tracks")]
+    public async Task<IActionResult> AddAudioTrack(Guid id, [FromBody] AddAudioTrackDto dto)
+    {
+        var tenantId = HttpContext.GetTenantId();
+        if (!await _db.Contents.AnyAsync(c => c.Id == id && c.TenantId == tenantId))
+            return NotFound(ApiResponse<object>.Fail("Content not found"));
+        var asset = await _db.VideoAssets.FirstOrDefaultAsync(a => a.ContentId == id && a.EpisodeId == null);
+        var track = new AudioTrack
+        {
+            ContentId = id,
+            AssetId = asset?.Id,
+            Language = dto.Language,
+            LanguageCode = dto.Language,
+            Label = string.IsNullOrWhiteSpace(dto.Label) ? dto.Language : dto.Label!,
+            TrackIndex = dto.TrackIndex,
+            IsDefault = dto.IsDefault
+        };
+        _db.AudioTracks.Add(track);
+        await _db.SaveChangesAsync();
+        return Ok(ApiResponse<object>.Ok(new { track.Id, track.Language, track.Label, track.TrackIndex, track.IsDefault }));
+    }
+
+    [HttpDelete("contents/{id:guid}/audio-tracks/{trackId:guid}")]
+    public async Task<IActionResult> DeleteAudioTrack(Guid id, Guid trackId)
+    {
+        var tenantId = HttpContext.GetTenantId();
+        if (!await _db.Contents.AnyAsync(c => c.Id == id && c.TenantId == tenantId))
+            return NotFound(ApiResponse<object>.Fail("Content not found"));
+        var track = await _db.AudioTracks.FirstOrDefaultAsync(a => a.Id == trackId && a.ContentId == id);
+        if (track == null) return NotFound(ApiResponse<object>.Fail("Audio track not found"));
+        _db.AudioTracks.Remove(track);
+        await _db.SaveChangesAsync();
+        return Ok(new { message = "Deleted" });
     }
 
     // ── Branding ──
@@ -416,6 +652,41 @@ public class AdminController : ControllerBase
         return Ok(new { message = "Stream ended" });
     }
 
+    // ── Community: suggestions & polls ──
+    [HttpGet("suggestions")]
+    public async Task<IActionResult> GetAdminSuggestions([FromQuery] string? status = null)
+        => Ok(ApiResponse<object>.Ok(await _community.GetAdminSuggestionsAsync(HttpContext.GetTenantId(), status)));
+
+    [HttpPut("suggestions/{id:guid}/status")]
+    public async Task<IActionResult> UpdateSuggestionStatus(Guid id, [FromBody] UpdateSuggestionStatusDto dto)
+        => Ok(ApiResponse<object>.Ok(await _community.UpdateSuggestionStatusAsync(HttpContext.GetTenantId(), id, dto)));
+
+    [HttpDelete("suggestions/{id:guid}")]
+    public async Task<IActionResult> DeleteSuggestion(Guid id)
+    {
+        await _community.DeleteSuggestionAsync(HttpContext.GetTenantId(), id);
+        return Ok(new { message = "Deleted" });
+    }
+
+    [HttpPost("suggestions/{id:guid}/promote")]
+    public async Task<IActionResult> PromoteSuggestion(Guid id, [FromBody] CreatePollDto dto)
+        => Ok(ApiResponse<object>.Ok(await _community.PromoteSuggestionAsync(HttpContext.GetTenantId(), HttpContext.RequireUserId(), id, dto)));
+
+    [HttpPost("polls")]
+    public async Task<IActionResult> CreatePoll([FromBody] CreatePollDto dto)
+        => Ok(ApiResponse<object>.Ok(await _community.CreatePollAsync(HttpContext.GetTenantId(), HttpContext.RequireUserId(), dto)));
+
+    [HttpPut("polls/{id:guid}")]
+    public async Task<IActionResult> UpdatePoll(Guid id, [FromBody] UpdatePollDto dto)
+        => Ok(ApiResponse<object>.Ok(await _community.UpdatePollAsync(HttpContext.GetTenantId(), id, dto)));
+
+    [HttpDelete("polls/{id:guid}")]
+    public async Task<IActionResult> DeletePoll(Guid id)
+    {
+        await _community.DeletePollAsync(HttpContext.GetTenantId(), id);
+        return Ok(new { message = "Deleted" });
+    }
+
     // ── Genres ──
     [HttpGet("genres")]
     public async Task<IActionResult> GetGenres()
@@ -482,6 +753,7 @@ public class AdminController : ControllerBase
         p.AllowUhd = dto.AllowUhd;
         p.Features = dto.Features.Count > 0 ? JsonSerializer.Serialize(dto.Features) : null;
         p.IsPopular = dto.IsPopular;
+        p.IsActive = dto.IsActive;
         p.RazorpayPlanId = dto.RazorpayPlanId;
     }
 
