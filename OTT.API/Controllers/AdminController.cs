@@ -143,6 +143,232 @@ public class AdminController : ControllerBase
         return Ok(ApiResponse<object>.Ok(rows));
     }
 
+    // Only genuine viewing signals count toward "when/what they watch" — not UI-driven pause/seek noise.
+    private static readonly string[] ViewingEventTypes =
+        { AnalyticsEventTypes.ContentView, AnalyticsEventTypes.WatchProgress, AnalyticsEventTypes.Play };
+
+    private static int PeriodDays(string period) => period switch { "7d" => 7, "90d" => 90, "365d" => 365, _ => 30 };
+
+    // When viewers watch: hour-of-day (0–23) and day-of-week (0=Sun..6=Sat) histograms, tenant-scoped.
+    [HttpGet("analytics/time-of-day")]
+    public async Task<IActionResult> TimeOfDay([FromQuery] string period = "30d")
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var since = DateTime.UtcNow.Date.AddDays(-PeriodDays(period));
+
+        var events = _db.AnalyticsEvents.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.CreatedAt >= since && ViewingEventTypes.Contains(e.EventType));
+
+        // Hour bucket translates to DATEPART(hour, …); 24 tiny rows out of SQL.
+        var hourlyRaw = await events
+            .GroupBy(e => e.CreatedAt.Hour)
+            .Select(g => new { Hour = g.Key, Count = g.Count() })
+            .ToListAsync();
+
+        // Day-of-week isn't reliably translatable, so aggregate per-date in SQL then fold to weekday in memory.
+        var dailyRaw = await events
+            .GroupBy(e => e.CreatedAt.Date)
+            .Select(g => new { Date = g.Key, Count = g.Count() })
+            .ToListAsync();
+
+        var byHour = Enumerable.Range(0, 24)
+            .Select(h => new { Hour = h, Count = hourlyRaw.Where(x => x.Hour == h).Sum(x => x.Count) })
+            .ToList();
+        var byDayOfWeek = Enumerable.Range(0, 7)
+            .Select(d => new { DayOfWeek = d, Count = dailyRaw.Where(x => (int)x.Date.DayOfWeek == d).Sum(x => x.Count) })
+            .ToList();
+
+        return Ok(ApiResponse<object>.Ok(new { byHour, byDayOfWeek }));
+    }
+
+    // What genres viewers binge: consumption rolled up from the daily ContentAnalytics aggregates.
+    // A title counts toward each of its genres, so shares reflect genre reach, not exclusive time.
+    [HttpGet("analytics/genres")]
+    public async Task<IActionResult> GenreConsumption([FromQuery] string period = "30d")
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var since = DateTime.UtcNow.Date.AddDays(-PeriodDays(period));
+
+        var rows = await (
+            from a in _db.ContentAnalytics.AsNoTracking()
+            join cg in _db.ContentGenres on a.ContentId equals cg.ContentId
+            join g in _db.Genres on cg.GenreId equals g.Id
+            where a.Date >= since && a.Content!.TenantId == tenantId
+            group a by new { g.Id, g.Name } into grp
+            select new
+            {
+                Genre = grp.Key.Name,
+                Views = grp.Sum(x => x.Views),
+                UniqueViewers = grp.Sum(x => x.UniqueViewers),
+                WatchSeconds = grp.Sum(x => (long)x.TotalWatchSeconds)
+            })
+            .OrderByDescending(x => x.WatchSeconds)
+            .ToListAsync();
+
+        var totalWatch = rows.Sum(r => r.WatchSeconds);
+        var result = rows.Select(r => new
+        {
+            r.Genre,
+            r.Views,
+            r.UniqueViewers,
+            WatchHours = Math.Round(r.WatchSeconds / 3600.0, 1),
+            SharePercent = totalWatch > 0 ? Math.Round(r.WatchSeconds * 100.0 / totalWatch, 1) : 0
+        });
+        return Ok(ApiResponse<object>.Ok(result));
+    }
+
+    // Device & platform mix across all captured events (tenant-scoped). Nulls fold to "unknown".
+    [HttpGet("analytics/devices")]
+    public async Task<IActionResult> Devices([FromQuery] string period = "30d")
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var since = DateTime.UtcNow.Date.AddDays(-PeriodDays(period));
+
+        var raw = await _db.AnalyticsEvents.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.CreatedAt >= since)
+            .GroupBy(e => new { e.DeviceType, e.Platform })
+            .Select(g => new { g.Key.DeviceType, g.Key.Platform, Count = g.Count() })
+            .ToListAsync();
+
+        var rows = raw
+            .Select(r => new { DeviceType = r.DeviceType ?? "unknown", Platform = r.Platform ?? "unknown", r.Count })
+            .OrderByDescending(r => r.Count)
+            .ToList();
+        return Ok(ApiResponse<object>.Ok(rows));
+    }
+
+    // Where viewers pause or skip within a single title — the drop-off/re-watch hotspots.
+    // Positions are parsed from the event ExtraData and bucketed along the timeline.
+    [HttpGet("analytics/engagement/{contentId:guid}")]
+    public async Task<IActionResult> Engagement(Guid contentId, [FromQuery] int bucketSeconds = 30, [FromQuery] string period = "90d")
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var since = DateTime.UtcNow.Date.AddDays(-PeriodDays(period));
+        bucketSeconds = Math.Clamp(bucketSeconds, 5, 600);
+
+        var events = await _db.AnalyticsEvents.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.ContentId == contentId && e.CreatedAt >= since
+                && (e.EventType == AnalyticsEventTypes.Pause || e.EventType == AnalyticsEventTypes.Seek)
+                && e.ExtraData != null)
+            .OrderByDescending(e => e.CreatedAt)
+            .Take(50000) // cap the in-memory parse; ample for a per-title report
+            .Select(e => new { e.EventType, e.ExtraData })
+            .ToListAsync();
+
+        var buckets = new Dictionary<int, (int Pauses, int Skips)>();
+        foreach (var ev in events)
+        {
+            var pos = ParsePosition(ev.ExtraData);
+            if (pos is not { } p) continue;
+            var bucket = p / bucketSeconds * bucketSeconds;
+            var cur = buckets.TryGetValue(bucket, out var c) ? c : (0, 0);
+            buckets[bucket] = ev.EventType == AnalyticsEventTypes.Pause
+                ? (cur.Item1 + 1, cur.Item2)
+                : (cur.Item1, cur.Item2 + 1);
+        }
+
+        var hotspots = buckets
+            .OrderBy(b => b.Key)
+            .Select(b => new { PositionSeconds = b.Key, Pauses = b.Value.Pauses, Skips = b.Value.Skips })
+            .ToList();
+        return Ok(ApiResponse<object>.Ok(new { bucketSeconds, sampled = events.Count, hotspots }));
+    }
+
+    // Pulls the integer "pos" out of an event's ExtraData JSON (e.g. {"pos":123,"to":250}).
+    private static int? ParsePosition(string? extraData)
+    {
+        if (string.IsNullOrEmpty(extraData)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(extraData);
+            return doc.RootElement.TryGetProperty("pos", out var p) && p.TryGetInt32(out var v) ? v : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    private const int SlowStartupThresholdMs = 4000; // a start slower than this hurts retention
+
+    // Quality-of-Experience: startup time, rebuffering and errors — the strongest churn predictors.
+    // For QoE events WatchDurationSeconds holds the metric in milliseconds (see AnalyticsEventTypes).
+    [HttpGet("analytics/qoe")]
+    public async Task<IActionResult> Qoe([FromQuery] string period = "30d")
+    {
+        var tenantId = HttpContext.GetTenantId();
+        var since = DateTime.UtcNow.Date.AddDays(-PeriodDays(period));
+
+        // One grouped pass over the QoE events → counts + avg metric per (platform, type).
+        var grouped = await _db.AnalyticsEvents.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.CreatedAt >= since
+                && (e.EventType == AnalyticsEventTypes.Startup
+                    || e.EventType == AnalyticsEventTypes.Rebuffer
+                    || e.EventType == AnalyticsEventTypes.PlaybackError))
+            .GroupBy(e => new { e.Platform, e.EventType })
+            .Select(g => new
+            {
+                g.Key.Platform,
+                g.Key.EventType,
+                Count = g.Count(),
+                AvgMs = g.Average(x => (double?)x.WatchDurationSeconds)
+            })
+            .ToListAsync();
+
+        // Slow-start count and total watched hours need their own filters/units.
+        var slowStarts = await _db.AnalyticsEvents.AsNoTracking()
+            .CountAsync(e => e.TenantId == tenantId && e.CreatedAt >= since
+                && e.EventType == AnalyticsEventTypes.Startup && e.WatchDurationSeconds > SlowStartupThresholdMs);
+
+        var watchSeconds = await _db.AnalyticsEvents.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.CreatedAt >= since && e.EventType == AnalyticsEventTypes.WatchProgress)
+            .SumAsync(e => (long?)e.WatchDurationSeconds) ?? 0;
+        var watchHours = watchSeconds / 3600.0;
+
+        double WeightedAvg(string type) =>
+            WeightedAverage(grouped.Where(r => r.EventType == type).Select(r => (r.Count, r.AvgMs)));
+        int TotalOf(string type) => grouped.Where(r => r.EventType == type).Sum(r => r.Count);
+
+        var rebufferCount = TotalOf(AnalyticsEventTypes.Rebuffer);
+        var summary = new
+        {
+            AvgStartupMs = Math.Round(WeightedAvg(AnalyticsEventTypes.Startup)),
+            StartupSamples = TotalOf(AnalyticsEventTypes.Startup),
+            SlowStartups = slowStarts,
+            RebufferCount = rebufferCount,
+            AvgStallMs = Math.Round(WeightedAvg(AnalyticsEventTypes.Rebuffer)),
+            ErrorCount = TotalOf(AnalyticsEventTypes.PlaybackError),
+            WatchHours = Math.Round(watchHours, 1),
+            RebuffersPerHour = watchHours > 0 ? Math.Round(rebufferCount / watchHours, 2) : 0
+        };
+
+        var byPlatform = grouped
+            .GroupBy(r => r.Platform ?? "unknown")
+            .Select(g => new
+            {
+                Platform = g.Key,
+                AvgStartupMs = Math.Round(WeightedAverage(
+                    g.Where(r => r.EventType == AnalyticsEventTypes.Startup).Select(r => (r.Count, r.AvgMs)))),
+                RebufferCount = g.Where(r => r.EventType == AnalyticsEventTypes.Rebuffer).Sum(r => r.Count),
+                ErrorCount = g.Where(r => r.EventType == AnalyticsEventTypes.PlaybackError).Sum(r => r.Count)
+            })
+            .OrderByDescending(x => x.RebufferCount + x.ErrorCount)
+            .ToList();
+
+        return Ok(ApiResponse<object>.Ok(new { summary, byPlatform }));
+    }
+
+    // Count-weighted mean of per-group averages (each group already carries its own avg + size).
+    private static double WeightedAverage(IEnumerable<(int Count, double? AvgMs)> rows)
+    {
+        long weight = 0;
+        double total = 0;
+        foreach (var (count, avg) in rows)
+        {
+            if (avg is not { } a) continue;
+            total += a * count;
+            weight += count;
+        }
+        return weight > 0 ? total / weight : 0;
+    }
+
     // ── Audit Log ──
     [HttpGet("audit-logs")]
     public async Task<IActionResult> GetAuditLogs([FromQuery] int page = 1, [FromQuery] int pageSize = 50)

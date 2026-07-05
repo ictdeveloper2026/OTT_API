@@ -11,11 +11,15 @@ namespace OTT.Application.Services;
 public interface IContentService
 {
     Task<HomePageDto> GetHomePageAsync(Guid tenantId, Guid? profileId = null);
-    Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null);
+    Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null, ClientContext? ctx = null);
     Task<PagedResultDto<ContentListItemDto>> SearchAsync(SearchRequestDto request, Guid tenantId);
     Task<PagedResultDto<ContentListItemDto>> GetByGenreAsync(Guid genreId, Guid tenantId, int page, int pageSize);
     Task<StreamUrlsDto> GetStreamUrlsAsync(Guid contentId, Guid tenantId, Guid? episodeId = null);
-    Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, int durationSeconds, Guid? episodeId = null);
+    Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, int durationSeconds, Guid? episodeId = null, ClientContext? ctx = null);
+    /// <summary>Records a granular playback event (play/pause/seek/resume/complete) into the analytics buffer.</summary>
+    Task RecordPlaybackEventAsync(Guid profileId, Guid contentId, string eventType, int positionSeconds, int? seekToSeconds, Guid? episodeId, ClientContext ctx);
+    /// <summary>Records a Quality-of-Experience metric (startup/rebuffer/playback_error) into the analytics buffer.</summary>
+    Task RecordQoeEventAsync(Guid profileId, Guid contentId, string eventType, int valueMs, int positionSeconds, Guid? episodeId, ClientContext ctx);
     Task<bool> AddToWatchlistAsync(Guid profileId, Guid contentId);
     Task<bool> RemoveFromWatchlistAsync(Guid profileId, Guid contentId);
     Task<bool> RateContentAsync(Guid profileId, Guid contentId, decimal rating);
@@ -64,6 +68,7 @@ public class ContentService : IContentService
         if (shell != null)
         {
             shell.ContinueWatching = await GetContinueWatchingShellAsync(profileId);
+            shell.Recommendations = await GetRecommendationsShellAsync(profileId, tenantId);
             return shell;
         }
 
@@ -101,15 +106,22 @@ public class ContentService : IContentService
             Banners = banners.Select(b => MapBanner(b, contents)).ToList(),
             Rows = rows.Select(r => MapContentRow(r, contents)).ToList(),
             ContinueWatching = [], // shared shell holds none; filled per-profile after caching
+            Recommendations = [], // same — personalized, filled per-profile after caching
             LiveNow = liveStreams.Select(MapLiveStreamList).ToList()
         };
 
         await _cache.SetAsync(cacheKey, dto, TimeSpan.FromMinutes(5));
 
-        // Attach the live, per-profile continue-watching to the response (not to the cached shell).
+        // Attach the live, per-profile continue-watching and recommendations to the response
+        // (not to the cached shell, which is shared across every profile on the tenant).
         dto.ContinueWatching = await GetContinueWatchingShellAsync(profileId);
+        dto.Recommendations = await GetRecommendationsShellAsync(profileId, tenantId);
         return dto;
     }
+
+    // Per-profile recommendations used by the homepage. Kept out of the shared homepage cache.
+    private async Task<List<ContentListItemDto>> GetRecommendationsShellAsync(Guid? profileId, Guid tenantId)
+        => profileId.HasValue ? await GetRecommendationsAsync(profileId.Value, tenantId) : [];
 
     // Per-profile continue-watching used by the homepage. Kept out of the shared homepage cache.
     private async Task<List<ContentListItemDto>> GetContinueWatchingShellAsync(Guid? profileId)
@@ -130,7 +142,7 @@ public class ContentService : IContentService
     private static string HomepageVersionKey(Guid tenantId) => $"homepage:ver:{tenantId}";
     private Task InvalidateHomepageAsync(Guid tenantId) => _cache.IncrementAsync(HomepageVersionKey(tenantId));
 
-    public async Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null)
+    public async Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null, ClientContext? ctx = null)
     {
         // AsSplitQuery: four collection includes in one query would otherwise produce a
         // cartesian row explosion (seasons×episodes×genres×casts×tags).
@@ -223,14 +235,18 @@ public class ContentService : IContentService
 
         // Emit a granular content_view event into the append-only analytics buffer. The flush
         // job batch-inserts these into AnalyticsEvents, which AnalyticsJob turns into UniqueViewers.
-        await _cache.ListPushAsync("analytics:pending", System.Text.Json.JsonSerializer.Serialize(new AnalyticsEventBuffer
+        // Device/geo context (when the client sent it) powers the region & device studio reports.
+        await EmitAnalyticsAsync(new AnalyticsEventBuffer
         {
             TenantId = tenantId,
             ViewerId = profileId,
             ContentId = contentId,
-            EventType = "content_view",
+            EventType = AnalyticsEventTypes.ContentView,
+            Platform = ctx?.Platform,
+            DeviceType = ctx?.DeviceType,
+            Country = ctx?.Country,
             CreatedAt = DateTime.UtcNow
-        }));
+        });
 
         return dto;
     }
@@ -423,7 +439,12 @@ public class ContentService : IContentService
         return await GetStreamUrlsInternalAsync(content);
     }
 
-    public async Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, int durationSeconds, Guid? episodeId = null)
+    // A single progress ping should count at most this many seconds of watch time. Consecutive
+    // pings are ~15s apart; capping the delta means a big forward seek (or a long gap after a
+    // pause) can't inflate aggregate watch-time — it's counted as position movement, not viewing.
+    private const int MaxWatchDeltaSeconds = 60;
+
+    public async Task UpdateWatchProgressAsync(Guid profileId, Guid contentId, int positionSeconds, int durationSeconds, Guid? episodeId = null, ClientContext? ctx = null)
     {
         // Write-behind: at ~3k writes/sec under load this must NOT hit SQL on every call.
         // Buffer the latest position per (profile, content, episode) in Redis; WriteBehindFlushJob
@@ -432,7 +453,104 @@ public class ContentService : IContentService
         var field = $"{profileId}|{contentId}|{episodeId?.ToString() ?? "none"}";
         var value = $"{positionSeconds}:{durationSeconds}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
         await _cache.HashSetAsync("wh:pending", field, value);
+
+        // Produce the watch_progress event AnalyticsJob aggregates into ContentAnalytics.TotalWatchSeconds
+        // (previously consumed but never produced, so watch-time always read zero). We derive the
+        // watched delta from the movement since the last ping, tracked in a short-lived per-key
+        // Redis string so seeks/pauses don't get double-counted. Tenant is required to attribute the
+        // event, so skip emission when no client context is available (e.g. background callers).
+        if (ctx is not { } c) return;
+
+        var posKey = $"whpos:{field}";
+        var last = await _cache.GetStringAsync(posKey);
+        var delta = int.TryParse(last, out var prev)
+            ? Math.Clamp(positionSeconds - prev, 0, MaxWatchDeltaSeconds)
+            : 0;
+        await _cache.SetStringAsync(posKey, positionSeconds.ToString(), TimeSpan.FromHours(6));
+
+        if (delta <= 0) return;
+        await EmitAnalyticsAsync(new AnalyticsEventBuffer
+        {
+            TenantId = c.TenantId,
+            ViewerId = profileId,
+            ContentId = contentId,
+            EpisodeId = episodeId,
+            EventType = AnalyticsEventTypes.WatchProgress,
+            WatchDurationSeconds = delta,
+            Platform = c.Platform,
+            DeviceType = c.DeviceType,
+            Country = c.Country,
+            CreatedAt = DateTime.UtcNow
+        });
     }
+
+    private static readonly HashSet<string> PlaybackEventTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        AnalyticsEventTypes.Play, AnalyticsEventTypes.Pause, AnalyticsEventTypes.Seek,
+        AnalyticsEventTypes.Resume, AnalyticsEventTypes.Complete
+    };
+
+    public async Task RecordPlaybackEventAsync(Guid profileId, Guid contentId, string eventType,
+        int positionSeconds, int? seekToSeconds, Guid? episodeId, ClientContext ctx)
+    {
+        // Defensive: the controller validates the type, but never trust the value that reaches the buffer.
+        if (!PlaybackEventTypes.Contains(eventType))
+            throw new ArgumentException($"Unsupported playback event type '{eventType}'.", nameof(eventType));
+
+        // Carry the playhead (and seek target) in ExtraData so the engagement-hotspot report can
+        // bucket where viewers pause or skip, without adding a column to the hot append path.
+        var extra = eventType.Equals(AnalyticsEventTypes.Seek, StringComparison.OrdinalIgnoreCase) && seekToSeconds is { } to
+            ? $"{{\"pos\":{positionSeconds},\"to\":{to}}}"
+            : $"{{\"pos\":{positionSeconds}}}";
+
+        await EmitAnalyticsAsync(new AnalyticsEventBuffer
+        {
+            TenantId = ctx.TenantId,
+            ViewerId = profileId,
+            ContentId = contentId,
+            EpisodeId = episodeId,
+            EventType = eventType.ToLowerInvariant(),
+            Platform = ctx.Platform,
+            DeviceType = ctx.DeviceType,
+            Country = ctx.Country,
+            ExtraData = extra,
+            CreatedAt = DateTime.UtcNow
+        });
+    }
+
+    private static readonly HashSet<string> QoeEventTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        AnalyticsEventTypes.Startup, AnalyticsEventTypes.Rebuffer, AnalyticsEventTypes.PlaybackError
+    };
+
+    public async Task RecordQoeEventAsync(Guid profileId, Guid contentId, string eventType,
+        int valueMs, int positionSeconds, Guid? episodeId, ClientContext ctx)
+    {
+        if (!QoeEventTypes.Contains(eventType))
+            throw new ArgumentException($"Unsupported QoE event type '{eventType}'.", nameof(eventType));
+
+        var isError = eventType.Equals(AnalyticsEventTypes.PlaybackError, StringComparison.OrdinalIgnoreCase);
+        await EmitAnalyticsAsync(new AnalyticsEventBuffer
+        {
+            TenantId = ctx.TenantId,
+            ViewerId = profileId,
+            ContentId = contentId,
+            EpisodeId = episodeId,
+            EventType = eventType.ToLowerInvariant(),
+            // startup/rebuffer store their metric (ms) here; errors carry no measurable value.
+            WatchDurationSeconds = isError ? null : Math.Max(0, valueMs),
+            Platform = ctx.Platform,
+            DeviceType = ctx.DeviceType,
+            Country = ctx.Country,
+            ExtraData = $"{{\"pos\":{positionSeconds}}}",
+            CreatedAt = DateTime.UtcNow
+        });
+    }
+
+    // Single choke point for pushing onto the append-only analytics buffer (Redis list drained by
+    // WriteBehindFlushJob), so every producer stamps events the same way.
+    private Task EmitAnalyticsAsync(AnalyticsEventBuffer evt) =>
+        _cache.ListPushAsync("analytics:pending", System.Text.Json.JsonSerializer.Serialize(evt));
 
     public async Task<bool> AddToWatchlistAsync(Guid profileId, Guid contentId)
     {
@@ -503,39 +621,92 @@ public class ContentService : IContentService
 
     public async Task<List<ContentListItemDto>> GetRecommendationsAsync(Guid profileId, Guid tenantId)
     {
-        // Simple collaborative filtering: find genres user watches most
-        var watchedGenres = await _db.WatchHistories
+        const int targetCount = 20;
+
+        // Score each genre the profile has touched using two signals:
+        //  - watch behavior, weighted by how much was actually finished (a completed watch is a much
+        //    stronger interest signal than a 30-second bail) and decayed by recency (a half-life of
+        //    ~60 days so last month's binge outweighs a genre watched once a year ago)
+        //  - explicit ratings, which can reinforce (>=6) or dampen (<6) a genre's weight
+        var watchSignals = await _db.WatchHistories
             .Where(w => w.ProfileId == profileId)
-            .Join(_db.ContentGenres, w => w.ContentId, cg => cg.ContentId, (w, cg) => cg.GenreId)
-            .GroupBy(g => g)
-            .OrderByDescending(g => g.Count())
-            .Select(g => g.Key)
-            .Take(3)
+            .Join(_db.ContentGenres, w => w.ContentId, cg => cg.ContentId,
+                (w, cg) => new { w.LastWatchedAt, w.IsCompleted, w.PositionSeconds, w.TotalSeconds, cg.GenreId })
             .ToListAsync();
 
-        var watchedIds = await _db.WatchHistories.Where(w => w.ProfileId == profileId).Select(w => w.ContentId).ToListAsync();
+        var ratingSignals = await _db.UserRatings
+            .Where(r => r.ProfileId == profileId)
+            .Join(_db.ContentGenres, r => r.ContentId, cg => cg.ContentId, (r, cg) => new { r.Rating, cg.GenreId })
+            .ToListAsync();
 
-        if (!watchedGenres.Any())
+        var watchedIds = await _db.WatchHistories.Where(w => w.ProfileId == profileId)
+            .Select(w => w.ContentId).Distinct().ToListAsync();
+
+        var now = DateTime.UtcNow;
+        var genreScores = new Dictionary<Guid, double>();
+
+        foreach (var s in watchSignals)
         {
-            // Cold start: return trending
+            var completion = s.IsCompleted ? 1.0
+                : s.TotalSeconds is > 0 ? Math.Clamp((double)s.PositionSeconds / s.TotalSeconds.Value, 0, 1)
+                : 0.2;
+            var recencyWeight = Math.Exp(-(now - s.LastWatchedAt).TotalDays / 60.0);
+            genreScores[s.GenreId] = genreScores.GetValueOrDefault(s.GenreId) + completion * recencyWeight;
+        }
+
+        foreach (var r in ratingSignals)
+        {
+            var weight = ((double)r.Rating - 5) / 5.0; // ratings are 0-10; 5 is neutral
+            genreScores[r.GenreId] = genreScores.GetValueOrDefault(r.GenreId) + weight;
+        }
+
+        var topGenres = genreScores
+            .Where(kv => kv.Value > 0)
+            .OrderByDescending(kv => kv.Value)
+            .Take(5)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        if (!topGenres.Any())
+        {
+            // Cold start, or every genre signal nets non-positive (e.g. low ratings throughout): trending only.
             return await _db.Contents
                 .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
                 .Where(c => c.TenantId == tenantId && c.Status == "published" && c.IsTrending)
                 .OrderByDescending(c => c.ViewCount)
-                .Take(20)
+                .Take(targetCount)
                 .Select(ListItemProjection)
                 .ToListAsync();
         }
 
-        return await _db.Contents
+        var matched = await _db.Contents
             .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
             .Where(c => c.TenantId == tenantId && c.Status == "published"
                 && !watchedIds.Contains(c.Id)
-                && c.ContentGenres.Any(cg => watchedGenres.Contains(cg.GenreId)))
+                && c.ContentGenres.Any(cg => topGenres.Contains(cg.GenreId)))
             .OrderByDescending(c => c.AverageRating)
-            .Take(20)
+            .ThenByDescending(c => c.ViewCount)
+            .Take(targetCount)
             .Select(ListItemProjection)
             .ToListAsync();
+
+        // Genre matches can run dry for a niche taste profile — pad out to a full row with trending
+        // content so the row never looks sparse next to the admin-curated ones.
+        if (matched.Count < targetCount)
+        {
+            var excludeIds = watchedIds.Concat(matched.Select(m => m.Id)).ToHashSet();
+            var padding = await _db.Contents
+                .Include(c => c.ContentGenres).ThenInclude(cg => cg.Genre)
+                .Where(c => c.TenantId == tenantId && c.Status == "published"
+                    && !excludeIds.Contains(c.Id) && c.IsTrending)
+                .OrderByDescending(c => c.ViewCount)
+                .Take(targetCount - matched.Count)
+                .Select(ListItemProjection)
+                .ToListAsync();
+            matched.AddRange(padding);
+        }
+
+        return matched;
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────

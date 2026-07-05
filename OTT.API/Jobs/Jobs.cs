@@ -209,6 +209,10 @@ public class WriteBehindFlushJob
                 EpisodeId = e.EpisodeId,
                 EventType = e.EventType,
                 WatchDurationSeconds = e.WatchDurationSeconds,
+                Platform = e.Platform,
+                DeviceType = e.DeviceType,
+                Country = e.Country,
+                ExtraData = e.ExtraData,
                 CreatedAt = e.CreatedAt
             });
         }

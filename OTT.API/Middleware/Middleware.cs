@@ -241,6 +241,26 @@ public static class HttpContextExtensions
             throw new UnauthorizedAccessException("No active profile selected");
         return id.Value;
     }
+
+    /// <summary>
+    /// Resolves the per-request viewer context (tenant + platform/device/country) that producers
+    /// stamp onto buffered analytics events. Platform/device come from client headers the Flutter
+    /// app already sends (X-Platform); country comes from the CDN/edge (CF-IPCountry) when present.
+    /// All fields except tenant are best-effort — a missing header simply yields null.
+    /// </summary>
+    public static OTT.Application.Services.ClientContext GetClientContext(this HttpContext context)
+    {
+        static string? Header(HttpContext c, string name) =>
+            c.Request.Headers.TryGetValue(name, out var v) && !string.IsNullOrWhiteSpace(v)
+                ? v.ToString().Trim()
+                : null;
+
+        return new OTT.Application.Services.ClientContext(
+            context.GetTenantIdOrDefault(),
+            Header(context, "X-Platform"),
+            Header(context, "X-Device-Type"),
+            Header(context, "CF-IPCountry") ?? Header(context, "X-Country"));
+    }
 }
 
 // ── Audit Log ──────────────────────────────────────────────────────────────────

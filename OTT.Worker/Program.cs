@@ -53,8 +53,11 @@ builder.Services.AddSingleton<IAmazonS3>(_ =>
         : new AmazonS3Client(s3Config);
 });
 
-// Services the transcoding job depends on (transitively VideoService → S3/CloudFront).
-builder.Services.AddScoped<IS3StorageService, S3StorageService>();
+// Services the transcoding job depends on (transitively VideoService → storage/CloudFront).
+// IStorageService is the admin-configurable backend (S3/S3-compatible/local disk) VideoService
+// actually reads/writes through; it must be registered here too since transcoding runs on this
+// worker host, not the API process.
+builder.Services.AddSingleton<IStorageService, DynamicStorageService>();
 builder.Services.AddScoped<ICloudFrontCdnService, CloudFrontCdnService>();
 builder.Services.AddScoped<IVideoJobQueue, HangfireVideoJobQueue>();
 builder.Services.AddScoped<IVideoService, VideoService>();

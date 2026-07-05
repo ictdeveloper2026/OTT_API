@@ -15,6 +15,20 @@ public record ProgressRequestDto(
     Guid? EpisodeId);
 public record WatchlistRequestDto(Guid ContentId);
 public record StreamSessionRequestDto([System.ComponentModel.DataAnnotations.Required] Guid StreamSessionId);
+public record PlaybackEventRequestDto(
+    [System.ComponentModel.DataAnnotations.Required,
+     System.ComponentModel.DataAnnotations.RegularExpression("^(play|pause|seek|resume|complete)$",
+         ErrorMessage = "Type must be one of: play, pause, seek, resume, complete")] string Type,
+    [System.ComponentModel.DataAnnotations.Range(0, int.MaxValue)] int PositionSeconds,
+    [System.ComponentModel.DataAnnotations.Range(0, int.MaxValue)] int? SeekToSeconds,
+    Guid? EpisodeId);
+public record QoeEventRequestDto(
+    [System.ComponentModel.DataAnnotations.Required,
+     System.ComponentModel.DataAnnotations.RegularExpression("^(startup|rebuffer|playback_error)$",
+         ErrorMessage = "Type must be one of: startup, rebuffer, playback_error")] string Type,
+    [System.ComponentModel.DataAnnotations.Range(0, int.MaxValue)] int ValueMs,
+    [System.ComponentModel.DataAnnotations.Range(0, int.MaxValue)] int PositionSeconds,
+    Guid? EpisodeId);
 
 [ApiController]
 [Route("api/contents")]
@@ -54,6 +68,13 @@ public class ContentsController : ControllerBase
         return Ok(ApiResponse<object>.Ok(result));
     }
 
+    [HttpGet("recommendations")]
+    public async Task<IActionResult> GetRecommendations()
+    {
+        var items = await _content.GetRecommendationsAsync(HttpContext.RequireProfileId(), HttpContext.GetTenantId());
+        return Ok(ApiResponse<object>.Ok(items));
+    }
+
     [HttpGet("new-releases")]
     [OutputCache(PolicyName = "catalog")]
     public async Task<IActionResult> GetNewReleases([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
@@ -89,7 +110,7 @@ public class ContentsController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetContent(Guid id)
     {
-        var content = await _content.GetContentDetailAsync(id, HttpContext.GetTenantId(), HttpContext.GetProfileId());
+        var content = await _content.GetContentDetailAsync(id, HttpContext.GetTenantId(), HttpContext.GetProfileId(), HttpContext.GetClientContext());
         return Ok(ApiResponse<object>.Ok(content));
     }
 
@@ -156,6 +177,34 @@ public class ContentsController : ControllerBase
         await _content.RateContentAsync(HttpContext.RequireProfileId(), id, req.Rating);
         return Ok(new { message = "Rated" });
     }
+
+    /// <summary>
+    /// Records a granular playback event (play/pause/seek/resume/complete) for first-party analytics.
+    /// Fire-and-forget from the player; buffered in Redis and flushed to AnalyticsEvents in batches.
+    /// </summary>
+    [HttpPost("{id:guid}/events")]
+    [Authorize]
+    public async Task<IActionResult> RecordEvent(Guid id, [FromBody] PlaybackEventRequestDto req)
+    {
+        await _content.RecordPlaybackEventAsync(
+            HttpContext.RequireProfileId(), id, req.Type, req.PositionSeconds, req.SeekToSeconds, req.EpisodeId,
+            HttpContext.GetClientContext());
+        return Ok();
+    }
+
+    /// <summary>
+    /// Records a Quality-of-Experience metric (startup time / rebuffer stall / fatal error) for the
+    /// player. Fire-and-forget; feeds the studio QoE dashboard (the strongest churn predictor).
+    /// </summary>
+    [HttpPost("{id:guid}/qoe")]
+    [Authorize]
+    public async Task<IActionResult> RecordQoe(Guid id, [FromBody] QoeEventRequestDto req)
+    {
+        await _content.RecordQoeEventAsync(
+            HttpContext.RequireProfileId(), id, req.Type, req.ValueMs, req.PositionSeconds, req.EpisodeId,
+            HttpContext.GetClientContext());
+        return Ok();
+    }
 }
 
 // ── Series ──
@@ -200,7 +249,7 @@ public class WatchHistoryController : ControllerBase
     [HttpPost("{contentId:guid}/progress")]
     public async Task<IActionResult> UpdateProgress(Guid contentId, [FromBody] ProgressRequestDto req)
     {
-        await _content.UpdateWatchProgressAsync(HttpContext.RequireProfileId(), contentId, req.WatchedSeconds, req.TotalSeconds, req.EpisodeId);
+        await _content.UpdateWatchProgressAsync(HttpContext.RequireProfileId(), contentId, req.WatchedSeconds, req.TotalSeconds, req.EpisodeId, HttpContext.GetClientContext());
         return Ok();
     }
 }

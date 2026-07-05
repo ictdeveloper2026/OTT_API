@@ -24,7 +24,7 @@ public interface IVideoService
 public class VideoService : IVideoService
 {
     private readonly OttDbContext _db;
-    private readonly IS3StorageService _s3;
+    private readonly IStorageService _storage;
     private readonly ICloudFrontCdnService _cdn;
     private readonly IConfiguration _config;
     private readonly IHttpClientFactory _httpFactory;
@@ -42,7 +42,7 @@ public class VideoService : IVideoService
 
     public VideoService(
         OttDbContext db,
-        IS3StorageService s3,
+        IStorageService storage,
         ICloudFrontCdnService cdn,
         IConfiguration config,
         IHttpClientFactory httpFactory,
@@ -50,7 +50,7 @@ public class VideoService : IVideoService
         ILogger<VideoService> logger)
     {
         _db = db;
-        _s3 = s3;
+        _storage = storage;
         _cdn = cdn;
         _config = config;
         _httpFactory = httpFactory;
@@ -116,18 +116,14 @@ public class VideoService : IVideoService
                 break;
         }
 
-        var uploadUrl = await _s3.GetPresignedUploadUrlAsync(key, request.ContentType);
+        var presigned = await _storage.GetPresignedUploadUrlAsync(key, request.ContentType, TimeSpan.FromHours(1));
 
         return new UploadUrlResponseDto
         {
-            UploadUrl = uploadUrl,
+            UploadUrl = presigned.Url,
             FileKey = key,
             AssetId = assetId == Guid.Empty ? null : assetId.ToString(),
-            Headers = new Dictionary<string, string>
-            {
-                { "Content-Type", request.ContentType },
-                { "x-amz-server-side-encryption", "AES256" }
-            }
+            Headers = presigned.Headers
         };
     }
 
@@ -169,8 +165,8 @@ public class VideoService : IVideoService
         {
             _logger.LogInformation("Starting FFmpeg transcoding for asset {AssetId}", assetId);
 
-            // Download source from S3
-            var sourceStream = await _s3.DownloadFileAsync(sourceKey);
+            // Download source from the configured storage backend (S3, S3-compatible, or local disk)
+            var sourceStream = await _storage.DownloadAsync(sourceKey);
             var localSource = Path.Combine(tempDir, "source" + Path.GetExtension(sourceKey));
             await using (var fs = File.Create(localSource))
                 await sourceStream.CopyToAsync(fs);
@@ -197,15 +193,15 @@ public class VideoService : IVideoService
                 var success = await RunFfmpegAsync(localSource, qualityDir, qWidth, qHeight, bitrate);
                 if (success)
                 {
-                    // Upload HLS segments
-                    var s3Prefix = $"transcoded/{contentId}/{quality}/";
+                    // Upload HLS segments (public — these are streamed directly by the player)
+                    var keyPrefix = $"transcoded/{contentId}/{quality}/";
                     foreach (var file in Directory.GetFiles(qualityDir))
                     {
                         var fileName = Path.GetFileName(file);
-                        var s3Key = s3Prefix + fileName;
+                        var outKey = keyPrefix + fileName;
                         var contentType = fileName.EndsWith(".m3u8") ? "application/x-mpegURL" : "video/MP2T";
                         await using var fileStream = File.OpenRead(file);
-                        await _s3.UploadFileAsync(fileStream, s3Key, contentType);
+                        await _storage.UploadPublicAsync(outKey, fileStream, contentType);
                     }
                     outputPaths[quality] = $"transcoded/{contentId}/{quality}/playlist.m3u8";
                     _logger.LogInformation("Transcoded {Quality} for asset {AssetId}", quality, assetId);
@@ -216,7 +212,7 @@ public class VideoService : IVideoService
             var masterPlaylist = GenerateMasterPlaylist(outputPaths, contentId.ToString());
             var masterKey = $"transcoded/{contentId}/master.m3u8";
             await using (var ms = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(masterPlaylist)))
-                await _s3.UploadFileAsync(ms, masterKey, "application/x-mpegURL");
+                await _storage.UploadPublicAsync(masterKey, ms, "application/x-mpegURL");
 
             // Generate thumbnails
             await GenerateThumbnailsFromLocalAsync(localSource, contentId, tempDir, 5);
@@ -303,7 +299,7 @@ public class VideoService : IVideoService
 
         try
         {
-            var sourceStream = await _s3.DownloadFileAsync(videoKey);
+            var sourceStream = await _storage.DownloadAsync(videoKey);
             var localSource = Path.Combine(tempDir, "source.mp4");
             await using (var fs = File.Create(localSource))
                 await sourceStream.CopyToAsync(fs);
@@ -342,9 +338,9 @@ public class VideoService : IVideoService
 
             if (await RunProcessAsync(ffmpegPath, args))
             {
-                var s3Key = $"thumbnails/{contentId}/thumb_{i:D2}.jpg";
+                var thumbKey = $"thumbnails/{contentId}/thumb_{i:D2}.jpg";
                 await using var fs = File.OpenRead(thumbPath);
-                await _s3.UploadFileAsync(fs, s3Key, "image/jpeg");
+                await _storage.UploadPublicAsync(thumbKey, fs, "image/jpeg");
             }
         }
 
