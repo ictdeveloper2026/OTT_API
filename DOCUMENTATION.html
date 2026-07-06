@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OTT Platform — Illustrated User &amp; Admin Guide</title>
+<style>
+  :root{
+    --red:#E50914; --red2:#ff2b36; --bg:#0b0b0f; --panel:#141414; --surface:#1c1c22; --surface2:#26262e;
+    --txt:#f5f5f7; --mut:#9a9aa6; --line:#2c2c34; --green:#22c55e; --amber:#f59e0b; --blue:#3b82f6; --purple:#a855f7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#08080c;color:var(--txt);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55}
+  a{color:var(--red2);text-decoration:none}
+  code{background:#000;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:12.5px;color:#e6e6ea}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 22px 70px}
+
+  /* Cover */
+  .cover{background:linear-gradient(135deg,#1a1a1a,#000 55%,#4a060b 150%);padding:46px 34px 36px;position:relative;overflow:hidden}
+  .cover::after{content:"";position:absolute;right:-40px;top:-60px;width:300px;height:300px;
+                background:radial-gradient(circle,rgba(229,9,20,.38),transparent 70%);border-radius:50%}
+  .brand{display:inline-flex;align-items:center;gap:9px;font-weight:800;text-transform:uppercase;letter-spacing:.6px;font-size:13px;opacity:.9}
+  .brand .dot{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,var(--red),#000);display:grid;place-items:center;color:#fff;font-size:14px}
+  .cover h1{font-size:32px;margin:16px 0 6px;font-weight:800}
+  .cover p{margin:0;opacity:.75;max-width:680px;font-size:15px}
+  .note{background:#171207;border:1px solid #5a4410;color:#f3d38b;border-radius:10px;padding:11px 14px;font-size:13px;margin:20px 0 0}
+
+  h2.sec{font-size:12px;text-transform:uppercase;letter-spacing:1.5px;color:var(--mut);margin:46px 0 2px;font-weight:800}
+  h3{font-size:20px;margin:6px 0 2px}
+  .lead{color:var(--mut);font-size:13.5px;margin:0 0 16px}
+
+  /* Layout: mockup + text side by side */
+  .row{display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap;margin:14px 0 8px}
+  .row .copy{flex:1;min-width:280px}
+  .row .copy ul{margin:6px 0 0;padding-left:18px}
+  .row .copy li{margin:4px 0;font-size:13.5px}
+  .cap{color:var(--mut);font-size:11.5px;text-align:center;margin-top:8px}
+  .cap b{color:#cfcfd6}
+
+  /* Phone frame */
+  .phone{width:236px;height:492px;background:#000;border-radius:32px;padding:8px;flex:none;
+         box-shadow:0 12px 30px rgba(0,0,0,.55),inset 0 0 0 2px #26262e;position:relative}
+  .phone.land{width:492px;height:236px}
+  .notch{position:absolute;top:8px;left:50%;transform:translateX(-50%);width:88px;height:18px;background:#000;border-radius:0 0 13px 13px;z-index:5}
+  .screen{width:100%;height:100%;border-radius:25px;overflow:hidden;background:var(--bg);position:relative;display:flex;flex-direction:column}
+  .sbar{height:20px;display:flex;align-items:center;justify-content:space-between;padding:5px 15px 0;font-size:8.5px;color:#cfcfd6;flex:none}
+
+  /* Browser frame */
+  .browser{flex:none;width:560px;background:#0d0d12;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 12px 30px rgba(0,0,0,.5)}
+  .browser.wide{width:100%}
+  .bbar{height:34px;background:#17171d;display:flex;align-items:center;gap:7px;padding:0 12px;border-bottom:1px solid var(--line)}
+  .dotr{width:11px;height:11px;border-radius:50%}
+  .url{margin-left:10px;background:#000;border:1px solid var(--line);border-radius:6px;height:20px;flex:1;max-width:340px;display:flex;align-items:center;padding:0 9px;font-size:10.5px;color:var(--mut)}
+
+  /* Generic UI atoms */
+  .pad{padding:12px 13px}
+  .topnav{display:flex;align-items:center;justify-content:space-between;padding:6px 13px}
+  .logo{display:flex;align-items:center;gap:6px;font-weight:800;font-size:12px}
+  .logo .d{width:16px;height:16px;border-radius:5px;background:linear-gradient(135deg,var(--red),#000)}
+  .hero{margin:8px 13px;height:120px;border-radius:12px;background:linear-gradient(120deg,#3a0d12,#111 70%);position:relative;overflow:hidden;padding:12px;display:flex;flex-direction:column;justify-content:flex-end}
+  .hero::after{content:"";position:absolute;right:-30px;top:-30px;width:130px;height:130px;background:radial-gradient(circle,rgba(229,9,20,.35),transparent 70%);border-radius:50%}
+  .hero h4{margin:0;font-size:15px}
+  .hero small{color:var(--mut);font-size:9.5px}
+  .btn{background:var(--red);color:#fff;border-radius:7px;font-size:10.5px;font-weight:700;padding:6px 12px;display:inline-block;text-align:center}
+  .btn.ghost{background:#ffffff18;border:1px solid #ffffff33}
+  .rowlabel{font-size:10.5px;font-weight:700;margin:12px 13px 6px;color:#e9e9ee}
+  .thumbs{display:flex;gap:8px;overflow:hidden;padding:0 13px}
+  .thumb{flex:none;width:64px;height:90px;border-radius:8px;background:linear-gradient(160deg,#26262e,#15151b);border:1px solid #2c2c34;position:relative}
+  .thumb.wide{width:104px;height:60px}
+  .thumb .pg{position:absolute;left:6px;right:6px;bottom:6px;height:3px;border-radius:2px;background:#ffffff22}
+  .thumb .pg i{display:block;height:100%;width:55%;background:var(--red);border-radius:2px}
+  .tabbar{margin-top:auto;height:38px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-around;font-size:8px;color:var(--mut)}
+  .tabbar .on{color:var(--red2)}
+  .ico{width:16px;height:16px;border-radius:5px;background:#ffffff14;display:block;margin:0 auto 2px}
+
+  /* Player */
+  .player{flex:1;background:radial-gradient(circle at 50% 40%,#232028,#0a0a0d);position:relative;display:flex;align-items:center;justify-content:center}
+  .playbtn{width:44px;height:44px;border-radius:50%;background:#ffffff22;border:1px solid #ffffff55;display:grid;place-items:center;color:#fff;font-size:16px}
+  .pcontrols{position:absolute;left:0;right:0;bottom:0;padding:9px 12px;background:linear-gradient(transparent,#000c)}
+  .seek{height:3px;border-radius:2px;background:#ffffff33;position:relative;margin:6px 0}
+  .seek i{position:absolute;left:0;top:0;bottom:0;width:38%;background:var(--red);border-radius:2px}
+  .seek b{position:absolute;left:38%;top:50%;transform:translate(-50%,-50%);width:9px;height:9px;background:#fff;border-radius:50%}
+  .pico{display:flex;gap:12px;color:#e9e9ee;font-size:9px;align-items:center}
+  .skip{position:absolute;right:12px;bottom:44px;border:1px solid #ffffff55;border-radius:6px;padding:4px 8px;font-size:9px}
+
+  /* Plan cards */
+  .plan{border:1px solid var(--line);border-radius:10px;padding:10px;margin:8px 13px;background:#101015}
+  .plan.hot{border-color:var(--red);background:#180a0c}
+  .plan .pr{font-size:16px;font-weight:800}
+  .plan small{color:var(--mut);font-size:9.5px}
+  .feat{font-size:9.5px;color:#cfcfd6;margin:4px 0 0}
+
+  /* Admin browser bits */
+  .admin{display:flex;height:300px}
+  .side{width:132px;background:#101015;border-right:1px solid var(--line);padding:10px 8px;font-size:11px;flex:none}
+  .side .it{padding:6px 8px;border-radius:6px;color:var(--mut);margin-bottom:2px}
+  .side .it.on{background:var(--red);color:#fff;font-weight:700}
+  .main{flex:1;padding:14px;overflow:hidden}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .stat{background:#141419;border:1px solid var(--line);border-radius:10px;padding:10px}
+  .stat .v{font-size:18px;font-weight:800}
+  .stat .l{font-size:10px;color:var(--mut)}
+  .chart{height:96px;margin-top:12px;background:#141419;border:1px solid var(--line);border-radius:10px;padding:10px;display:flex;align-items:flex-end;gap:6px}
+  .chart span{flex:1;background:linear-gradient(var(--red),#7a060d);border-radius:4px 4px 0 0}
+  .field{background:#141419;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:11px;color:var(--mut);margin-bottom:8px}
+  .field b{color:#e9e9ee;font-weight:600}
+  .drop{border:1.5px dashed #3a3a44;border-radius:10px;padding:18px;text-align:center;color:var(--mut);font-size:11px;background:#0e0e13}
+  .badge{display:inline-block;font-size:9.5px;padding:2px 8px;border-radius:20px;font-weight:700}
+  .b-amber{background:#3a2c07;color:#f5c264;border:1px solid #6a5210}
+  .b-green{background:#0e2c17;color:#63d68c;border:1px solid #1b6b39}
+  .bars{display:flex;align-items:flex-end;gap:3px;height:60px;margin-top:8px}
+  .bars span{flex:1;background:#3a3a52;border-radius:2px}
+  .bars span.hi{background:var(--red)}
+  .qtiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:6px}
+  .qt{background:#141419;border:1px solid var(--line);border-radius:10px;padding:9px}
+  .qt .v{font-size:16px;font-weight:800}
+  .qt .l{font-size:9.5px;color:var(--mut)}
+
+  /* Flow strip */
+  .flow{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+  .step{flex:1;min-width:150px;background:#101015;border:1px solid var(--line);border-radius:10px;padding:12px}
+  .step .n{width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;display:grid;place-items:center;font-weight:800;font-size:11px;margin-bottom:6px}
+  .step h5{margin:0 0 3px;font-size:13px}
+  .step p{margin:0;color:var(--mut);font-size:11.5px}
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="brand"><span class="dot">▶</span> OTT Platform</div>
+  <h1>Illustrated User &amp; Admin Guide</h1>
+  <p>How to <b>access &amp; watch</b> (viewers) and <b>upload &amp; manage</b> content (admins/studios), with visual walkthroughs of every key screen.</p>
+</div>
+
+<div class="wrap">
+  <div class="note">📐 <b>These are UI mockups</b> that reflect the app's real design and screen layout — not live captures.
+  For pixel-perfect screenshots, run the app against a seeded backend and drop real images in place (see the end of this guide).
+  The written reference lives in <code>DOCUMENTATION.md</code>.</div>
+
+  <!-- ══════════════ VIEWER ══════════════ -->
+  <h2 class="sec">Part 1 — Viewer experience</h2>
+
+  <h3>1. Home &amp; discovery</h3>
+  <p class="lead">Where viewers land after signing in.</p>
+  <div class="row">
+    <div class="phone"><div class="notch"></div><div class="screen">
+      <div class="sbar"><span>9:41</span><span>5G ▮▮▮</span></div>
+      <div class="topnav"><div class="logo"><span class="d"></span> STREAM</div><div style="font-size:11px;color:var(--mut)">🔍 👤</div></div>
+      <div class="hero"><span class="btn" style="align-self:flex-start;margin-bottom:6px">▶ Play</span><h4>Featured Title</h4><small>Action • 2024 • ⭐ 8.4</small></div>
+      <div class="rowlabel">Continue Watching</div>
+      <div class="thumbs"><div class="thumb"><div class="pg"><i></i></div></div><div class="thumb"><div class="pg"><i></i></div></div><div class="thumb"><div class="pg"><i></i></div></div></div>
+      <div class="rowlabel">Trending Now</div>
+      <div class="thumbs"><div class="thumb"></div><div class="thumb"></div><div class="thumb"></div></div>
+      <div class="tabbar"><div class="on"><span class="ico"></span>Home</div><div><span class="ico"></span>Search</div><div><span class="ico"></span>Live</div><div><span class="ico"></span>List</div></div>
+    </div></div>
+    <div class="copy">
+      <ul>
+        <li><b>Home</b> shows personalized rows: continue watching, trending, new releases, genre rails, and hero banners (all merchandised by admins).</li>
+        <li><b>Search</b> covers title / description / director with filters (type, language, year).</li>
+        <li><b>Live</b> &amp; <b>Live TV</b> tabs host live events and IPTV channels.</li>
+        <li>Bottom tab bar: Home · Search · Live · My List.</li>
+      </ul>
+      <div class="cap"><b>Screen:</b> Home &nbsp;·&nbsp; route <code>/home</code></div>
+    </div>
+  </div>
+
+  <h3>2. Title detail &amp; the player</h3>
+  <div class="row">
+    <div class="phone"><div class="notch"></div><div class="screen">
+      <div class="sbar"><span>9:41</span><span>5G ▮▮▮</span></div>
+      <div class="hero" style="height:150px;margin-top:0;border-radius:0 0 12px 12px"><h4>The Feature Film</h4><small>2024 • 2h 14m • ⭐ 8.4 • U/A</small></div>
+      <div class="pad"><span class="btn">▶ Play</span> <span class="btn ghost">＋ My List</span> <span class="btn ghost">★ Rate</span>
+        <p style="font-size:10.5px;color:var(--mut);margin:10px 0 0">A gripping story of… synopsis text describing the plot in a couple of lines for the viewer.</p>
+        <div class="rowlabel" style="margin-left:0">Cast</div>
+        <div style="display:flex;gap:6px;font-size:9px;color:#cfcfd6"><span class="field" style="margin:0;padding:4px 8px">Actor A</span><span class="field" style="margin:0;padding:4px 8px">Actor B</span></div>
+        <div class="rowlabel" style="margin-left:0">More like this</div>
+        <div class="thumbs" style="padding:0"><div class="thumb"></div><div class="thumb"></div><div class="thumb"></div></div>
+      </div>
+    </div></div>
+    <div class="phone land"><div class="screen">
+      <div class="player"><div class="playbtn">❚❚</div>
+        <div class="skip">Skip Intro ⏭</div>
+        <div class="pcontrols">
+          <div class="pico" style="justify-content:space-between"><span>The Feature Film</span><span>HD · CC · 🔊 · ⚙</span></div>
+          <div class="seek"><i></i><b></b></div>
+          <div class="pico" style="justify-content:space-between"><span>34:12</span><span>2:14:00</span></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="row"><div class="copy" style="min-width:100%">
+    <ul>
+      <li><b>Detail</b> (<code>/content/:id</code>): synopsis, cast, rating, related titles. <b>Play</b>, <b>＋ My List</b>, <b>Rate</b>.</li>
+      <li><b>Player</b> (<code>/play/:id</code>): quality (HD/Auto), subtitles/CC, multi-audio, <b>resume</b>, <b>Skip Intro</b>, speed, fullscreen. Progress auto-syncs to "Continue Watching".</li>
+      <li>Paywalled titles prompt a <b>subscribe</b> flow if the viewer isn't entitled.</li>
+    </ul>
+  </div></div>
+
+  <h3>3. Subscribe &amp; pay</h3>
+  <div class="row">
+    <div class="phone"><div class="notch"></div><div class="screen">
+      <div class="sbar"><span>9:41</span><span>5G ▮▮▮</span></div>
+      <div class="rowlabel" style="font-size:14px">Choose your plan</div>
+      <div class="plan"><div class="pr">₹149 <small>/mo</small></div><div class="feat">HD • 1 screen • Mobile</div></div>
+      <div class="plan hot"><span class="badge b-amber">POPULAR</span><div class="pr">₹299 <small>/mo</small></div><div class="feat">Full HD • 2 screens • All devices</div><div class="btn" style="margin-top:8px;display:block">Subscribe</div></div>
+      <div class="plan"><div class="pr">₹499 <small>/mo</small></div><div class="feat">4K • 4 screens • Downloads</div></div>
+      <div class="field" style="margin:8px 13px">🎟 <b>Promo code</b> — apply at checkout</div>
+    </div></div>
+    <div class="copy">
+      <ul>
+        <li><b>Plans</b> (<code>/subscribe</code>): tiers with price, quality and max concurrent streams.</li>
+        <li><b>Pay</b> via Razorpay (web/Android) or in-app purchase (Play/Apple). Apply <b>promo codes</b> at checkout.</li>
+        <li><b>Billing</b> (<code>/billing</code>): invoices, current plan, cancel.</li>
+        <li>Per-plan <b>stream limits</b> enforced — extra devices get a "stop playback elsewhere" message.</li>
+      </ul>
+      <div class="cap"><b>Also:</b> profiles (incl. Kids + parental PIN), downloads, watch-party, community.</div>
+    </div>
+  </div>
+
+  <!-- ══════════════ ADMIN ══════════════ -->
+  <h2 class="sec">Part 2 — Admin / studio</h2>
+
+  <h3>4. Admin dashboard</h3>
+  <div class="browser">
+    <div class="bbar"><span class="dotr" style="background:#ff5f56"></span><span class="dotr" style="background:#ffbd2e"></span><span class="dotr" style="background:#27c93f"></span><span class="url">yourapp.com/admin</span></div>
+    <div class="admin">
+      <div class="side">
+        <div class="it on">Dashboard</div><div class="it">Content</div><div class="it">Live</div><div class="it">Banners</div>
+        <div class="it">Users</div><div class="it">Plans</div><div class="it">Analytics</div><div class="it">Branding</div>
+      </div>
+      <div class="main">
+        <div class="grid4">
+          <div class="stat"><div class="v">12.4K</div><div class="l">Users</div></div>
+          <div class="stat"><div class="v">3.1K</div><div class="l">Subscriptions</div></div>
+          <div class="stat"><div class="v">842</div><div class="l">Titles</div></div>
+          <div class="stat"><div class="v">₹4.7L</div><div class="l">Revenue (mo)</div></div>
+        </div>
+        <div class="chart"><span style="height:40%"></span><span style="height:55%"></span><span style="height:48%"></span><span style="height:70%"></span><span style="height:62%"></span><span style="height:85%"></span><span style="height:78%"></span></div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><b>Screen:</b> Admin Dashboard &nbsp;·&nbsp; route <code>/admin</code> (admin role required)</div>
+
+  <h3>5. Uploading content — step by step</h3>
+  <p class="lead">Create metadata → add media → transcode → publish.</p>
+  <div class="flow">
+    <div class="step"><div class="n">1</div><h5>Create title</h5><p>Title, type (movie/series), description, genres, cast, maturity.</p></div>
+    <div class="step"><div class="n">2</div><h5>Artwork</h5><p>Upload poster (2:3) &amp; banner (16:9).</p></div>
+    <div class="step"><div class="n">3</div><h5>Video</h5><p>Upload file → HLS transcode, <i>or</i> link YouTube/Vimeo.</p></div>
+    <div class="step"><div class="n">4</div><h5>Tracks</h5><p>Add subtitles (.vtt/.srt) + audio-track labels.</p></div>
+    <div class="step"><div class="n">5</div><h5>Publish</h5><p>Draft → Publish → live in the catalog.</p></div>
+  </div>
+
+  <div class="row" style="margin-top:18px">
+    <div class="browser">
+      <div class="bbar"><span class="dotr" style="background:#ff5f56"></span><span class="dotr" style="background:#ffbd2e"></span><span class="dotr" style="background:#27c93f"></span><span class="url">yourapp.com/admin/content</span></div>
+      <div class="pad">
+        <div style="font-weight:800;margin-bottom:10px">Add content</div>
+        <div class="field"><b>Title:</b> The Feature Film</div>
+        <div style="display:flex;gap:8px"><div class="field" style="flex:1"><b>Type:</b> Movie</div><div class="field" style="flex:1"><b>Year:</b> 2024</div></div>
+        <div class="field"><b>Genres:</b> Action · Thriller</div>
+        <div class="drop">⬆ Drag &amp; drop <b style="color:#e9e9ee">movie.mp4</b> — or pick a pre-signed S3 upload for large files</div>
+        <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+          <span class="badge b-amber">⏳ Transcoding to HLS…</span>
+          <span style="font-size:11px;color:var(--mut)">then</span>
+          <span class="badge b-green">✓ Publish</span>
+        </div>
+      </div>
+    </div>
+    <div class="copy">
+      <b>Pipeline:</b>
+      <ul>
+        <li>Upload → stored in S3 → <b>FFmpeg transcode</b> (Hangfire worker) → adaptive <b>HLS</b> → CloudFront.</li>
+        <li>Large files use a <b>pre-signed S3 upload</b> (direct PUT, no server round-trip).</li>
+        <li>Playback URLs are <b>signed</b> and only issued to <b>entitled</b> viewers.</li>
+      </ul>
+      <div class="cap" style="text-align:left">API: <code>POST /api/admin/contents</code> → <code>/contents/{id}/video</code> → <code>/contents/{id}/publish</code></div>
+    </div>
+  </div>
+
+  <h3>6. Analytics &amp; QoE (first-party data)</h3>
+  <div class="browser wide">
+    <div class="bbar"><span class="dotr" style="background:#ff5f56"></span><span class="dotr" style="background:#ffbd2e"></span><span class="dotr" style="background:#27c93f"></span><span class="url">yourapp.com/admin/analytics</span></div>
+    <div class="pad">
+      <div style="display:flex;gap:6px;margin-bottom:12px;font-size:10.5px">
+        <span class="badge" style="background:var(--red);color:#fff">30 days</span><span class="badge" style="background:#141419;color:var(--mut);border:1px solid var(--line)">7d</span><span class="badge" style="background:#141419;color:var(--mut);border:1px solid var(--line)">90d</span><span class="badge" style="background:#141419;color:var(--mut);border:1px solid var(--line)">1y</span>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <div style="font-size:12px;font-weight:700;margin-bottom:2px">When viewers watch</div>
+          <div class="bars"><span style="height:20%"></span><span style="height:15%"></span><span style="height:25%"></span><span style="height:40%"></span><span style="height:55%"></span><span style="height:70%"></span><span class="hi" style="height:95%"></span><span class="hi" style="height:88%"></span><span style="height:60%"></span><span style="height:45%"></span></div>
+          <div class="cap" style="text-align:left">Hour-of-day + weekday histograms</div>
+        </div>
+        <div style="flex:1;min-width:220px">
+          <div style="font-size:12px;font-weight:700;margin-bottom:2px">Genre binge (watch-time share)</div>
+          <div style="font-size:10.5px;color:#cfcfd6">Action ▓▓▓▓▓▓▓ 34%<br>Drama ▓▓▓▓▓ 24%<br>Comedy ▓▓▓ 15%<br>Thriller ▓▓ 11%</div>
+        </div>
+      </div>
+      <div style="font-size:12px;font-weight:700;margin:14px 0 4px">Playback quality (QoE) — top churn signal</div>
+      <div class="qtiles">
+        <div class="qt"><div class="v" style="color:#60a5fa">1.8s</div><div class="l">Avg startup</div></div>
+        <div class="qt"><div class="v" style="color:#f59e0b">0.42</div><div class="l">Rebuffers / hr</div></div>
+        <div class="qt"><div class="v" style="color:#f87171">37</div><div class="l">Errors</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="row" style="margin-top:10px"><div class="copy" style="min-width:100%">
+    <ul>
+      <li><b>Reports</b> (<code>/admin/analytics</code>): top content, regions, <b>time-of-day</b>, <b>genre-binge</b>, <b>devices/platforms</b>, <b>engagement hotspots</b> (where viewers pause/skip a title), and <b>QoE</b> (startup/rebuffer/errors, per platform). Period selector: 7d / 30d / 90d / 1y.</li>
+      <li>Powered by first-party telemetry the player emits automatically. CSV exports available for revenue, users and content-analytics.</li>
+    </ul>
+  </div></div>
+
+  <!-- ══════════════ REAL SCREENSHOTS ══════════════ -->
+  <h2 class="sec">Appendix — Replacing these with real screenshots</h2>
+  <div class="row"><div class="copy" style="min-width:100%">
+    <ol style="font-size:13.5px;color:#d5d5db">
+      <li>Bring the stack up: <code>docker compose up -d sqlserver redis</code> → <code>dotnet run --project OTT.API</code> → seed a tenant, an admin user and a few titles.</li>
+      <li>Run the app: <code>flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:50664</code>.</li>
+      <li>Log in, navigate each screen, and capture (browser screenshot / device screenshot).</li>
+      <li>Drop the images into <code>docs/screens/</code> and swap the mockups above for <code>&lt;img&gt;</code> tags — or embed them in <code>DOCUMENTATION.md</code>.</li>
+    </ol>
+    <div class="cap" style="text-align:left">Note: on <b>web</b> the video player is limited (media_kit/YouTube/Vimeo are mobile/desktop-oriented), so capture player screens on <b>Android/iOS</b>.</div>
+  </div></div>
+
+</div>
+</body>
+</html>
