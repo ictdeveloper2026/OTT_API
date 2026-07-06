@@ -11,7 +11,7 @@ namespace OTT.Application.Services;
 public interface IContentService
 {
     Task<HomePageDto> GetHomePageAsync(Guid tenantId, Guid? profileId = null);
-    Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null, ClientContext? ctx = null);
+    Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null, ClientContext? ctx = null, bool publishedOnly = true);
     Task<PagedResultDto<ContentListItemDto>> SearchAsync(SearchRequestDto request, Guid tenantId);
     Task<PagedResultDto<ContentListItemDto>> GetByGenreAsync(Guid genreId, Guid tenantId, int page, int pageSize);
     Task<StreamUrlsDto> GetStreamUrlsAsync(Guid contentId, Guid tenantId, Guid? episodeId = null);
@@ -142,7 +142,7 @@ public class ContentService : IContentService
     private static string HomepageVersionKey(Guid tenantId) => $"homepage:ver:{tenantId}";
     private Task InvalidateHomepageAsync(Guid tenantId) => _cache.IncrementAsync(HomepageVersionKey(tenantId));
 
-    public async Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null, ClientContext? ctx = null)
+    public async Task<ContentDetailDto> GetContentDetailAsync(Guid contentId, Guid tenantId, Guid? profileId = null, ClientContext? ctx = null, bool publishedOnly = true)
     {
         // AsSplitQuery: four collection includes in one query would otherwise produce a
         // cartesian row explosion (seasons×episodes×genres×casts×tags).
@@ -153,7 +153,7 @@ public class ContentService : IContentService
             .Include(c => c.ContentCasts)
             .Include(c => c.ContentTags).ThenInclude(ct => ct.Tag)
             .AsSplitQuery()
-            .FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId && c.Status == "published")
+            .FirstOrDefaultAsync(c => c.Id == contentId && c.TenantId == tenantId && (!publishedOnly || c.Status == "published"))
             ?? throw new KeyNotFoundException("Content not found");
 
         var dto = new ContentDetailDto
@@ -757,7 +757,8 @@ public class ContentService : IContentService
         await _db.SaveChangesAsync();
         await InvalidateHomepageAsync(tenantId);
 
-        return await GetContentDetailAsync(content.Id, tenantId);
+        // A freshly created title is a draft — fetch it without the published filter, or this 404s.
+        return await GetContentDetailAsync(content.Id, tenantId, publishedOnly: false);
     }
 
     public async Task<ContentDetailDto> UpdateContentAsync(Guid contentId, Guid tenantId, CreateContentDto dto)
@@ -792,7 +793,8 @@ public class ContentService : IContentService
         await _db.SaveChangesAsync();
         await InvalidateHomepageAsync(content.TenantId);
 
-        return await GetContentDetailAsync(contentId, content.TenantId);
+        // Admin edits may target a draft — don't apply the published filter here either.
+        return await GetContentDetailAsync(contentId, content.TenantId, publishedOnly: false);
     }
 
     public async Task<bool> DeleteContentAsync(Guid contentId, Guid tenantId)
