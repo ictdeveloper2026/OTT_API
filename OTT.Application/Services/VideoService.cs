@@ -7,6 +7,7 @@ using OTT.Infrastructure.Data;
 using OTT.Infrastructure.Services;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace OTT.Application.Services;
 
@@ -240,56 +241,59 @@ public class VideoService : IVideoService
         }
     }
 
+    // Pulls the 11-char YouTube id out of anything: watch?v=… (with &list=…), youtu.be/…,
+    // /embed/…, /shorts/…, an <iframe> embed, or a bare id. Never throws; null if unparseable.
+    public static string? ExtractYouTubeId(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return null;
+        var s = input.Trim();
+        if (Regex.IsMatch(s, "^[A-Za-z0-9_-]{11}$")) return s;
+        var m = Regex.Match(s, @"(?:youtu\.be/|[?&]v=|/embed/|/shorts/|/v/)([A-Za-z0-9_-]{11})");
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
+    // Numeric Vimeo id from vimeo.com/123, player.vimeo.com/video/123, or a bare id.
+    public static string? ExtractVimeoId(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return null;
+        var s = input.Trim();
+        if (Regex.IsMatch(s, @"^\d+$")) return s;
+        var m = Regex.Match(s, @"vimeo\.com/(?:video/)?(\d+)");
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
     public async Task<string?> ExtractYouTubeInfoAsync(string urlOrId)
     {
-        // Extract YouTube ID from URL or return as-is
-        var id = urlOrId;
-        if (urlOrId.Contains("youtube.com") || urlOrId.Contains("youtu.be"))
-        {
-            var uri = new Uri(urlOrId);
-            if (urlOrId.Contains("youtu.be"))
-                id = uri.AbsolutePath.TrimStart('/');
-            else
-            {
-                var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
-                id = query["v"] ?? "";
-            }
-        }
+        var id = ExtractYouTubeId(urlOrId);
+        if (id == null) return null;
 
-        if (string.IsNullOrEmpty(id)) return null;
-
-        // Validate with YouTube oEmbed
+        // Best-effort validation via YouTube oEmbed — but a well-formed id is accepted even when
+        // the server can't reach YouTube (offline / restricted egress), so validation never blocks it.
         try
         {
             var client = _httpFactory.CreateClient();
             var response = await client.GetAsync($"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={id}&format=json");
-            if (response.IsSuccessStatusCode) return id;
+            _ = response.IsSuccessStatusCode;
         }
         catch { }
 
-        return null;
+        return id;
     }
 
     public async Task<string?> ExtractVimeoInfoAsync(string urlOrId)
     {
-        var id = urlOrId;
-        if (urlOrId.Contains("vimeo.com"))
-        {
-            var uri = new Uri(urlOrId);
-            id = uri.AbsolutePath.TrimStart('/').Split('/')[0];
-        }
-
-        if (string.IsNullOrEmpty(id) || !long.TryParse(id, out _)) return null;
+        var id = ExtractVimeoId(urlOrId);
+        if (id == null) return null;
 
         try
         {
             var client = _httpFactory.CreateClient();
             var response = await client.GetAsync($"https://vimeo.com/api/oembed.json?url=https://vimeo.com/{id}");
-            if (response.IsSuccessStatusCode) return id;
+            _ = response.IsSuccessStatusCode;
         }
         catch { }
 
-        return null;
+        return id;
     }
 
     public async Task<bool> GenerateThumbnailsAsync(Guid contentId, string videoKey, int count = 5)

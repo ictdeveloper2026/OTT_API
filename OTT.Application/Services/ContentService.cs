@@ -733,8 +733,9 @@ public class ContentService : IContentService
             IsFeatured = dto.IsFeatured,
             IsTrending = dto.IsTrending,
             Status = "draft",
-            YoutubeId = dto.YoutubeId,
-            VimeoId = dto.VimeoId,
+            // Accept a link/iframe/id in these fields and store just the id.
+            YoutubeId = VideoService.ExtractYouTubeId(dto.YoutubeId) ?? dto.YoutubeId,
+            VimeoId = VideoService.ExtractVimeoId(dto.VimeoId) ?? dto.VimeoId,
             HlsUrl = dto.HlsUrl,
             VideoSourceType = dto.VideoSourceType,
             CreatedAt = DateTime.UtcNow
@@ -778,8 +779,8 @@ public class ContentService : IContentService
         content.Price = dto.Price ?? content.Price;
         content.IsFeatured = dto.IsFeatured;
         content.IsTrending = dto.IsTrending;
-        content.YoutubeId = dto.YoutubeId ?? content.YoutubeId;
-        content.VimeoId = dto.VimeoId ?? content.VimeoId;
+        content.YoutubeId = dto.YoutubeId != null ? (VideoService.ExtractYouTubeId(dto.YoutubeId) ?? dto.YoutubeId) : content.YoutubeId;
+        content.VimeoId = dto.VimeoId != null ? (VideoService.ExtractVimeoId(dto.VimeoId) ?? dto.VimeoId) : content.VimeoId;
         content.HlsUrl = dto.HlsUrl ?? content.HlsUrl;
 
         // Update genres
