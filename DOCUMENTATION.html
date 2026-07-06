@@ -134,9 +134,27 @@
 </div>
 
 <div class="wrap">
-  <div class="note">📐 <b>These are UI mockups</b> that reflect the app's real design and screen layout — not live captures.
-  For pixel-perfect screenshots, run the app against a seeded backend and drop real images in place (see the end of this guide).
-  The written reference lives in <code>DOCUMENTATION.md</code>.</div>
+  <div class="note">📐 Most images below are <b>UI mockups</b> that reflect the app's real design and screen layout.
+  The <b>login screens are real captures</b> of the running app (below). Authenticated screens (home, admin,
+  analytics) couldn't be auto-captured — the app renders on a <b>CanvasKit canvas</b>, so scripted login isn't
+  possible; capture those manually in ~5 min (steps at the end). The written reference lives in <code>DOCUMENTATION.md</code>.</div>
+
+  <h2 class="sec">Real captures — Login (running app)</h2>
+  <div class="row" style="align-items:flex-start">
+    <figure style="margin:0;text-align:center">
+      <img src="docs/screens/login-desktop.png" alt="Login (desktop)" style="width:520px;max-width:100%;border:1px solid var(--line);border-radius:10px">
+      <div class="cap"><b>Real screenshot</b> — Login (web / desktop)</div>
+    </figure>
+    <figure style="margin:0;text-align:center">
+      <img src="docs/screens/login-mobile.png" alt="Login (mobile)" style="width:190px;border:1px solid var(--line);border-radius:22px">
+      <div class="cap"><b>Real screenshot</b> — Login (mobile)</div>
+    </figure>
+    <div class="copy">
+      <p style="font-size:13.5px;color:#d5d5db;margin-top:0">Captured from the live app via headless Chromium
+      (<code>flutter build web</code> → served → Playwright). Login credentials are entered here to reach the
+      viewer/admin screens; everything past this point is shown as mockups.</p>
+    </div>
+  </div>
 
   <!-- ══════════════ VIEWER ══════════════ -->
   <h2 class="sec">Part 1 — Viewer experience</h2>
